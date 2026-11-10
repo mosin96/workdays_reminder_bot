@@ -16,7 +16,7 @@ from bot.models import DayInfo, Employee, Schedule, Shift
 def _schedule() -> Schedule:
     schedule = Schedule(
         id=1,
-        chat_id=10,
+        group_id=10,
         year=2026,
         month=11,
         status="draft",

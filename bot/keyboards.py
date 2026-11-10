@@ -5,7 +5,15 @@ from __future__ import annotations
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .callbacks import CancelCB, EmployeeCB, RememberCB, UploadCB
+from .callbacks import (
+    CancelCB,
+    DeleteWorkspaceCB,
+    EmployeeCB,
+    RememberCB,
+    StartCB,
+    SwitchCB,
+    UploadCB,
+)
 from .models import Employee, Schedule
 from .utils import (
     MONTHS_NOMINATIVE,
@@ -112,6 +120,51 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_button("❌ Отменить распознавание", CancelCB())]
+        ]
+    )
+
+
+def start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "🔗 Подписаться по коду",
+                    StartCB(action="subscribe"),
+                ),
+                _button(
+                    "🆕 Создать новое",
+                    StartCB(action="create"),
+                ),
+            ]
+        ]
+    )
+
+
+def switch_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "🔄 Переключиться",
+                    SwitchCB(),
+                ),
+                _button("⬅️ Отмена", StartCB(action="cancel")),
+            ]
+        ]
+    )
+
+
+def delete_workspace_keyboard(group_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "🗑 Удалить навсегда",
+                    DeleteWorkspaceCB(group_id=group_id, confirm=1),
+                ),
+                _button("⬅️ Отмена", StartCB(action="cancel")),
+            ]
         ]
     )
 

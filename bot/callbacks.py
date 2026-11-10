@@ -25,3 +25,16 @@ class RememberCB(CallbackData, prefix="rem"):
 
 class CancelCB(CallbackData, prefix="cancel"):
     pass
+
+
+class StartCB(CallbackData, prefix="start"):
+    action: str
+
+
+class SwitchCB(CallbackData, prefix="switch"):
+    pass
+
+
+class DeleteWorkspaceCB(CallbackData, prefix="delws"):
+    group_id: int
+    confirm: int = 0

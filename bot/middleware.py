@@ -1,4 +1,4 @@
-"""Middleware, блокирующий чат на время распознавания."""
+"""Middleware: блокировка чата и запрет параллельного OCR."""
 
 from __future__ import annotations
 
@@ -8,8 +8,40 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from .processing import ProcessingRegistry
+from .storage import Storage
 
 WAIT_TEXT = "⏳ Ожидайте, идёт распознавание…\nОтменить: /cancel"
+
+
+def event_chat_id(event: TelegramObject) -> int | None:
+    if isinstance(event, Message):
+        return event.chat.id if event.chat else None
+    if isinstance(event, CallbackQuery):
+        if event.message is not None:
+            return event.message.chat.id
+        if event.from_user is not None:
+            return event.from_user.id
+    return None
+
+
+class BlockedChatMiddleware(BaseMiddleware):
+    """Отбрасывает любые события заблокированного чата."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        storage: Storage | None = data.get("storage")
+        if storage is None:
+            return await handler(event, data)
+        chat_id = event_chat_id(event)
+        if chat_id is None:
+            return await handler(event, data)
+        if await storage.is_chat_blocked(chat_id):
+            return None
+        return await handler(event, data)
 
 
 class ProcessingMiddleware(BaseMiddleware):
@@ -25,15 +57,7 @@ class ProcessingMiddleware(BaseMiddleware):
         if registry is None:
             return await handler(event, data)
 
-        chat_id: int | None = None
-        if isinstance(event, Message):
-            chat_id = event.chat.id
-        elif isinstance(event, CallbackQuery):
-            if event.message is not None:
-                chat_id = event.message.chat.id
-            elif event.from_user is not None:
-                chat_id = event.from_user.id
-
+        chat_id = event_chat_id(event)
         if chat_id is None:
             return await handler(event, data)
 

@@ -13,7 +13,7 @@ from aiogram.types import BotCommand
 
 from bot.config import Config, ConfigError
 from bot.handlers import router
-from bot.middleware import ProcessingMiddleware
+from bot.middleware import BlockedChatMiddleware, ProcessingMiddleware
 from bot.processing import ProcessingRegistry
 from bot.storage import Storage
 
@@ -26,6 +26,7 @@ COMMANDS = [
     BotCommand(command="edit", description="Изменить смены вручную"),
     BotCommand(command="employee", description="Сменить сотрудника"),
     BotCommand(command="months", description="Загруженные месяцы"),
+    BotCommand(command="share", description="Код расписания"),
     BotCommand(command="help", description="Справка"),
 ]
 
@@ -52,6 +53,8 @@ async def main() -> None:
     dispatcher["storage"] = storage
     dispatcher["config"] = config
     dispatcher["processing"] = ProcessingRegistry()
+    router.message.outer_middleware(BlockedChatMiddleware())
+    router.callback_query.outer_middleware(BlockedChatMiddleware())
     router.message.outer_middleware(ProcessingMiddleware())
     router.callback_query.outer_middleware(ProcessingMiddleware())
     dispatcher.include_router(router)

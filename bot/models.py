@@ -27,9 +27,26 @@ class DayInfo:
 
 
 @dataclass
+class ScheduleGroup:
+    id: int
+    code: str
+    owner_chat_id: int
+    created_at: str
+
+
+@dataclass
+class ChatSubscription:
+    chat_id: int
+    group_id: int
+    employee_name: str | None = None
+    employee_name_norm: str | None = None
+    remember: bool = False
+
+
+@dataclass
 class Schedule:
     id: int
-    chat_id: int
+    group_id: int
     year: int
     month: int
     status: str
@@ -44,11 +61,3 @@ class Schedule:
 
     def shift(self, position: int, day: int) -> Shift | None:
         return self.shifts.get((position, day))
-
-
-@dataclass
-class ChatSettings:
-    chat_id: int
-    employee_name: str | None = None
-    employee_name_norm: str | None = None
-    remember: bool = False
