@@ -164,12 +164,23 @@ def employees_on_shift(
 ) -> list[Employee]:
     """Сотрудники с указанным типом смены в конкретный день."""
 
+    return employees_on_shift_types(
+        schedule, day, {shift_type}, exclude_position
+    )
+
+
+def employees_on_shift_types(
+    schedule: Schedule,
+    day: date,
+    shift_types: set[str],
+    exclude_position: int | None = None,
+) -> list[Employee]:
     result: list[Employee] = []
     for employee in schedule.employees:
         if employee.position == exclude_position:
             continue
         shift = schedule.shift(employee.position, day.day)
-        if shift is not None and shift.type == shift_type:
+        if shift is not None and shift.type in shift_types:
             result.append(employee)
     return result
 
@@ -177,7 +188,7 @@ def employees_on_shift(
 def next_shift(day: date, shift_type: str) -> tuple[date, str] | None:
     """Следующая смена в порядке: день -> ночь того же дня -> день+1."""
 
-    if shift_type == "day":
+    if shift_type in {"day", "short_day"}:
         return day, "night"
     if shift_type == "night":
         return day + timedelta(days=1), "day"

@@ -45,7 +45,7 @@ def test_day_status_text() -> None:
     text = day_status_text(schedule, employee, date(2026, 11, 1))
     assert "1 ноября 2026" in text
     assert "Иванов Иван" in text
-    assert "ночная смена" in text
+    assert "ночная 12-часовая смена" in text
 
     text = day_status_text(schedule, employee, date(2026, 11, 2))
     assert "Выходной" in text
@@ -70,6 +70,23 @@ def test_unknown_day_status() -> None:
     assert "Нет данных за этот день" in text
 
 
+def test_short_day_and_overtime_status() -> None:
+    schedule = _schedule()
+    employee = schedule.employees[0]
+    schedule.shifts[(0, 2)] = Shift(0, 2, "ДД", "short_day")
+    text = day_status_text(schedule, employee, date(2026, 11, 2))
+    assert "8-часовая смена" in text
+    assert "ДД" in text
+    assert "Переработка" not in text
+
+    schedule.shifts[(0, 2)] = Shift(
+        0, 2, "ДД+П", "short_day", overtime=True
+    )
+    text = day_status_text(schedule, employee, date(2026, 11, 2))
+    assert "8-часовая смена" in text
+    assert "Переработка (+П)" in text
+
+
 def test_summary_text() -> None:
     text = schedule_summary_text(_schedule())
     assert "Иванов Иван" in text
@@ -86,7 +103,7 @@ def test_month_caption_text() -> None:
     assert "Ноябрь 2026" in text
     assert "Петров Пётр" in text
     assert "Нажмите день" in text
-    assert "🟩 день" in text
+    assert "12ч день" in text
 
     edit_text = month_caption_text(
         schedule, schedule.employees[1], edit=True
@@ -109,10 +126,10 @@ def test_today_report_day_and_handover() -> None:
         date(2026, 11, 1),
         next_schedule=schedule,
     )
-    assert "дневная смена" in text
+    assert "дневная 12-часовая смена" in text
     assert "В этой же смене сегодня: никого" in text
     assert "Передать смену" in text
-    assert "ночная смена" in text
+    assert "ночная 12-часовая смена" in text
     assert "принимает: Иванов Иван" in text
 
 
@@ -125,7 +142,7 @@ def test_today_report_night_handover_next_day() -> None:
         date(2026, 11, 1),
         next_schedule=schedule,
     )
-    assert "ночная смена" in text
+    assert "ночная 12-часовая смена" in text
     assert "2 ноября 2026" in text
     assert "принимает: Петров Пётр" in text
 

@@ -242,3 +242,29 @@ async def test_new_database_is_kept(tmp_path: Path) -> None:
         assert restored.code == group.code
     finally:
         await second.close()
+
+
+async def test_existing_db_gets_overtime_column(tmp_path: Path) -> None:
+    path = tmp_path / "upgrade.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE schedule_groups ("
+        "id INTEGER PRIMARY KEY, code TEXT, owner_chat_id INTEGER, created_at TEXT)"
+    )
+    connection.execute(
+        "CREATE TABLE shifts ("
+        "schedule_id INTEGER, position INTEGER, day INTEGER, "
+        "code TEXT, type TEXT, confidence INTEGER, "
+        "PRIMARY KEY (schedule_id, position, day))"
+    )
+    connection.commit()
+    connection.close()
+
+    storage = Storage(path)
+    await storage.init()
+    try:
+        cursor = await storage.db.execute("PRAGMA table_info(shifts)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+        assert "overtime" in columns
+    finally:
+        await storage.close()

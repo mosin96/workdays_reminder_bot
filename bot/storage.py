@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS shifts (
     code TEXT,
     type TEXT NOT NULL,
     confidence INTEGER NOT NULL DEFAULT 0,
+    overtime INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (schedule_id, position, day)
 );
 
@@ -120,7 +121,18 @@ class Storage:
         await self._db.execute("PRAGMA journal_mode = WAL")
         await self._db.execute("PRAGMA foreign_keys = ON")
         await self._db.executescript(SCHEMA)
+        await self._ensure_shift_columns()
         await self._db.commit()
+
+    async def _ensure_shift_columns(self) -> None:
+        """Добавляет новые поля в существующую базу без потери данных."""
+
+        cursor = await self.db.execute("PRAGMA table_info(shifts)")
+        columns = {str(row["name"]) for row in await cursor.fetchall()}
+        if "overtime" not in columns:
+            await self.db.execute(
+                "ALTER TABLE shifts ADD COLUMN overtime INTEGER NOT NULL DEFAULT 0"
+            )
 
     async def _drop_old_schema_if_needed(self) -> None:
         """Удаляет базу старого формата (до появления schedule_groups)."""
@@ -410,7 +422,11 @@ class Storage:
         employee_names: list[str],
         days: list[int],
         weekend: dict[int, bool],
-        cells: dict[tuple[int, int], tuple[str | None, str, int]],
+        cells: dict[
+            tuple[int, int],
+            tuple[str | None, str, int]
+            | tuple[str | None, str, int, bool],
+        ],
         source: str | None = None,
     ) -> int:
         async with self._lock:
@@ -441,12 +457,22 @@ class Storage:
                     (schedule_id, day, weekday, int(weekend.get(day, False))),
                 )
 
-            for (position, day), (code, shift_type, confidence) in cells.items():
+            for (position, day), entry in cells.items():
+                code, shift_type, confidence = entry[:3]
+                overtime = bool(entry[3]) if len(entry) > 3 else False
                 await self.db.execute(
                     "INSERT OR REPLACE INTO shifts "
-                    "(schedule_id, position, day, code, type, confidence) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (schedule_id, position, day, code, shift_type, confidence),
+                    "(schedule_id, position, day, code, type, confidence, overtime) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        schedule_id,
+                        position,
+                        day,
+                        code,
+                        shift_type,
+                        confidence,
+                        int(overtime),
+                    ),
                 )
 
             await self.db.commit()
@@ -504,7 +530,8 @@ class Storage:
             )
 
         cursor = await self.db.execute(
-            "SELECT position, day, code, type FROM shifts WHERE schedule_id = ?",
+            "SELECT position, day, code, type, overtime FROM shifts "
+            "WHERE schedule_id = ?",
             (schedule.id,),
         )
         for shift in await cursor.fetchall():
@@ -515,6 +542,7 @@ class Storage:
                 day=day,
                 code=shift["code"],
                 type=str(shift["type"]),
+                overtime=bool(shift["overtime"]),
             )
         return schedule
 
@@ -655,6 +683,7 @@ class Storage:
         day: int,
         code: str | None,
         shift_type: str,
+        overtime: bool = False,
     ) -> bool:
         async with self._lock:
             schedule = await self.get_schedule(schedule_id)
@@ -666,9 +695,16 @@ class Storage:
                 return False
             await self.db.execute(
                 "INSERT OR REPLACE INTO shifts "
-                "(schedule_id, position, day, code, type, confidence) "
-                "VALUES (?, ?, ?, ?, ?, 100)",
-                (schedule_id, position, day, code, shift_type),
+                "(schedule_id, position, day, code, type, confidence, overtime) "
+                "VALUES (?, ?, ?, ?, ?, 100, ?)",
+                (
+                    schedule_id,
+                    position,
+                    day,
+                    code,
+                    shift_type,
+                    int(overtime),
+                ),
             )
             await self.db.commit()
             return True

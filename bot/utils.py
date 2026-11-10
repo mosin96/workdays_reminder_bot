@@ -70,6 +70,7 @@ MONTH_ALIASES = {
 _SHIFT_EMOJI = {
     "day": "🟩",
     "night": "🟦",
+    "short_day": "🟪",
     "vacation": "🟨",
     "off": "⬜",
     "unknown": "❔",
@@ -78,6 +79,7 @@ _SHIFT_EMOJI = {
 _SHIFT_TITLES = {
     "day": "дневная смена",
     "night": "ночная смена",
+    "short_day": "8-часовая смена",
     "vacation": "отпуск",
     "off": "выходной",
     "unknown": "не распознано",

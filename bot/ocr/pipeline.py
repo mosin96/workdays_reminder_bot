@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 # Типы смен.
 DAY = "day"
 NIGHT = "night"
+SHORT_DAY = "short_day"
 OFF = "off"
 VACATION = "vacation"
 UNKNOWN = "unknown"
@@ -114,6 +115,7 @@ class OcrCell:
     code: str | None
     type: str
     confidence: int = 0
+    overtime: bool = False
 
 
 @dataclass
@@ -141,9 +143,19 @@ class OcrResult:
         )
 
     def totals(self) -> dict[str, int]:
-        result = {DAY: 0, NIGHT: 0, VACATION: 0, OFF: 0, UNKNOWN: 0}
+        result = {
+            DAY: 0,
+            NIGHT: 0,
+            SHORT_DAY: 0,
+            VACATION: 0,
+            OFF: 0,
+            UNKNOWN: 0,
+            "overtime": 0,
+        }
         for cell in self.cells.values():
             result[cell.type] = result.get(cell.type, 0) + 1
+            if cell.overtime:
+                result["overtime"] += 1
         return result
 
 
@@ -538,28 +550,81 @@ def _ocr_shift(
             continue
         text, conf = _tesseract_best(
             prepared,
-            "--psm 10 -c tessedit_char_whitelist=ДНднМмОоО",
+            "--psm 10 -c tessedit_char_whitelist=ДНднМмОоОПп",
         )
         if conf > best_conf:
             best_text, best_conf = text, conf
         if conf >= 85:
             break
+    if not best_text:
+        # Иногда многосимвольный код (ДД+П, НМ+П) не читается как один символ.
+        for variant in _VARIANTS[:4]:
+            _check_cancel(cancel_event)
+            prepared = _prepare_variant(cell, variant)
+            if prepared is None:
+                continue
+            text, conf = _tesseract_best(
+                prepared,
+                "--psm 7 -c tessedit_char_whitelist=ДНднМмОоОПп",
+            )
+            if conf > best_conf:
+                best_text, best_conf = text, conf
+            if conf >= 60:
+                break
     return best_text, best_conf
 
 
-def _classify_shift(text: str, confidence: int) -> tuple[str | None, str]:
-    normalized = re.sub(r"[^а-яё]", "", text.lower(), flags=re.UNICODE)
-    if not normalized:
-        return None, OFF
-    if "н" in normalized:
-        return text.strip().upper(), NIGHT
-    if "д" in normalized:
-        return text.strip().upper(), DAY
-    if "о" in normalized or "отпуск" in normalized:
-        return "О", VACATION
-    if confidence < 30:
-        return text.strip().upper() or None, UNKNOWN
-    return text.strip().upper() or None, UNKNOWN
+def _shift_code(raw: str, shift_type: str, overtime: bool) -> str:
+    letters = re.sub(r"[^а-яё]", "", raw.lower(), flags=re.UNICODE)
+    base = letters.replace("п", "")
+    if shift_type == SHORT_DAY and "дд" in base:
+        code = "ДД"
+    elif shift_type == NIGHT and "нм" in base:
+        code = "НМ"
+    elif shift_type == NIGHT and "н" in base:
+        code = "Н"
+    elif shift_type == SHORT_DAY:
+        code = "ДД"
+    elif shift_type == DAY:
+        code = "Д"
+    elif shift_type == VACATION:
+        code = "О"
+    else:
+        code = raw.strip().upper()
+    if overtime:
+        code = code.replace("+П", "") + "+П"
+    return code
+
+
+def _classify_shift(
+    text: str, confidence: int
+) -> tuple[str | None, str, bool]:
+    raw = text.strip()
+    letters = re.sub(r"[^а-яё]", "", raw.lower(), flags=re.UNICODE)
+    if "отпуск" in letters:
+        overtime = "+" in raw
+        base = letters
+    else:
+        overtime = "+" in raw or "п" in letters
+        base = letters.replace("п", "")
+
+    if not base:
+        if not letters and not raw:
+            return None, OFF, False
+        return raw.upper() or None, UNKNOWN, overtime
+
+    if "дд" in base:
+        shift_type = SHORT_DAY
+    elif "н" in base:
+        shift_type = NIGHT
+    elif "д" in base:
+        shift_type = DAY
+    elif "о" in base or "отпуск" in base:
+        shift_type = VACATION
+    else:
+        return raw.upper() or None, UNKNOWN, overtime
+
+    return _shift_code(raw, shift_type, overtime), shift_type, overtime
 
 
 # ---------------------------------------------------------------------------
@@ -740,13 +805,14 @@ def parse_schedule_image(
 
     with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
         for position, day, text, confidence in pool.map(_run, jobs):
-            code, shift_type = _classify_shift(text, confidence)
+            code, shift_type, overtime = _classify_shift(text, confidence)
             cells[(position, day)] = OcrCell(
                 day=day,
                 position=position,
                 code=code,
                 type=shift_type,
                 confidence=confidence,
+                overtime=overtime,
             )
             if shift_type == UNKNOWN:
                 issues.append(
@@ -766,7 +832,9 @@ def parse_schedule_image(
             )
             for position in range(len(employees))
         ]
-        calculated_day = sum(1 for cell in row_cells if cell.type == DAY)
+        calculated_day = sum(
+            1 for cell in row_cells if cell.type in {DAY, SHORT_DAY}
+        )
         calculated_night = sum(1 for cell in row_cells if cell.type == NIGHT)
         stated_day, stated_night = counts.get(day, (None, None))
         mismatch = False

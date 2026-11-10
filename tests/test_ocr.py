@@ -100,9 +100,11 @@ def test_parse_example_image(sample_image: Path) -> None:
     assert result.totals() == {
         "day": 41,
         "night": 31,
+        "short_day": 0,
         "vacation": 21,
         "off": 87,
         "unknown": 0,
+        "overtime": 0,
     }
 
     # Несколько точечных проверок по позициям сотрудников.
@@ -112,3 +114,34 @@ def test_parse_example_image(sample_image: Path) -> None:
     assert result.shift(5, 30).code == "НМ"
     assert result.shift(2, 14).type == "day"
     assert result.shift(4, 14).type == "night"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("д", ("Д", "day", False)),
+        ("н", ("Н", "night", False)),
+        ("дд", ("ДД", "short_day", False)),
+        ("нм", ("НМ", "night", False)),
+        ("д+п", ("Д+П", "day", True)),
+        ("н+п", ("Н+П", "night", True)),
+        ("дд+п", ("ДД+П", "short_day", True)),
+        ("нм+п", ("НМ+П", "night", True)),
+        ("отпуск", ("О", "vacation", False)),
+        ("", (None, "off", False)),
+    ],
+)
+def test_classify_shift_codes(text: str, expected: tuple) -> None:
+    from bot.ocr.pipeline import _classify_shift
+
+    code, shift_type, overtime = _classify_shift(text, 90)
+    assert (code, shift_type, overtime) == expected
+
+
+def test_classify_overtime_without_base_is_unknown() -> None:
+    from bot.ocr.pipeline import _classify_shift
+
+    code, shift_type, overtime = _classify_shift("+п", 50)
+    assert shift_type == "unknown"
+    assert overtime is True
+    assert code is not None

@@ -348,9 +348,10 @@ def days_keyboard(
             continue
         shift = schedule.shift(position, day)
         shift_type = shift.type if shift else "unknown"
+        overtime_mark = "+" if shift is not None and shift.overtime else ""
         current_row.append(
             _button(
-                f"{day}{shift_emoji(shift_type)}",
+                f"{day}{shift_emoji(shift_type)}{overtime_mark}",
                 UploadCB(
                     action=action,
                     sid=schedule.id,
@@ -440,71 +441,99 @@ def shift_type_keyboard(
     day: int,
     *,
     context: str = "menu",
+    current_type: str | None = None,
+    overtime: bool = False,
 ) -> InlineKeyboardMarkup:
     def value(shift_type: str) -> str:
         return f"{shift_type}|{context}"
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            _button(
+                "🟩 Д (12ч)",
+                UploadCB(
+                    action="settype",
+                    sid=schedule_id,
+                    pos=position,
+                    day=day,
+                    value=value("day"),
+                ),
+            ),
+            _button(
+                "🟦 Н (12ч)",
+                UploadCB(
+                    action="settype",
+                    sid=schedule_id,
+                    pos=position,
+                    day=day,
+                    value=value("night"),
+                ),
+            ),
+        ],
+        [
+            _button(
+                "🟪 ДД (8ч)",
+                UploadCB(
+                    action="settype",
+                    sid=schedule_id,
+                    pos=position,
+                    day=day,
+                    value=value("short_day"),
+                ),
+            ),
+            _button(
+                "🟨 Отпуск",
+                UploadCB(
+                    action="settype",
+                    sid=schedule_id,
+                    pos=position,
+                    day=day,
+                    value=value("vacation"),
+                ),
+            ),
+        ],
+        [
+            _button(
+                "⬜ Выходной",
+                UploadCB(
+                    action="settype",
+                    sid=schedule_id,
+                    pos=position,
+                    day=day,
+                    value=value("off"),
+                ),
+            )
+        ],
+    ]
+    if current_type in {"day", "night", "short_day"}:
+        rows.append(
             [
                 _button(
-                    "🟩 Дневная",
+                    "🟧 +П выключить" if overtime else "🟧 +П включить",
                     UploadCB(
-                        action="settype",
+                        action="toggle_overtime",
                         sid=schedule_id,
                         pos=position,
                         day=day,
-                        value=value("day"),
-                    ),
-                ),
-                _button(
-                    "🟦 Ночная",
-                    UploadCB(
-                        action="settype",
-                        sid=schedule_id,
-                        pos=position,
-                        day=day,
-                        value=value("night"),
-                    ),
-                ),
-            ],
-            [
-                _button(
-                    "🟨 Отпуск",
-                    UploadCB(
-                        action="settype",
-                        sid=schedule_id,
-                        pos=position,
-                        day=day,
-                        value=value("vacation"),
-                    ),
-                ),
-                _button(
-                    "⬜ Выходной",
-                    UploadCB(
-                        action="settype",
-                        sid=schedule_id,
-                        pos=position,
-                        day=day,
-                        value=value("off"),
-                    ),
-                ),
-            ],
-            [
-                _button(
-                    "⬅️ К календарю",
-                    UploadCB(
-                        action="edit_emp",
-                        sid=schedule_id,
-                        pos=position,
-                        value="quick"
-                        if context == "quick"
-                        else "menu",
+                        value=context,
                     ),
                 )
-            ],
+            ]
+        )
+    rows.append(
+        [
+            _button(
+                "⬅️ К календарю",
+                UploadCB(
+                    action="edit_emp",
+                    sid=schedule_id,
+                    pos=position,
+                    value="quick" if context == "quick" else "menu",
+                ),
+            )
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def date_menu_keyboard(schedule: Schedule) -> InlineKeyboardMarkup:

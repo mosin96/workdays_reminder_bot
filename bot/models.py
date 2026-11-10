@@ -17,6 +17,7 @@ class Shift:
     day: int
     code: str | None
     type: str
+    overtime: bool = False
 
 
 @dataclass

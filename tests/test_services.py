@@ -103,6 +103,7 @@ def test_employees_on_shift() -> None:
 def test_next_shift_sequence() -> None:
     day = date(2026, 11, 30)
     assert next_shift(day, "day") == (day, "night")
+    assert next_shift(day, "short_day") == (day, "night")
     assert next_shift(day, "night") == (date(2026, 12, 1), "day")
     assert next_shift(day, "off") is None
     assert next_shift(day, "vacation") is None

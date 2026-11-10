@@ -7,32 +7,54 @@ from datetime import date
 
 from .models import Employee, Schedule, Shift
 from .ocr.pipeline import OcrResult
-from .services import employees_on_shift, next_shift
+from .services import employees_on_shift, employees_on_shift_types, next_shift
 from .utils import (
     days_in_month,
     format_date_ru,
     format_month_ru,
     month_name,
     shift_emoji,
-    shift_title,
     weekday_name,
 )
 
-LEGEND = "🟩 день · 🟦 ночь · 🟨 отпуск · ⬜ выходной"
+LEGEND = (
+    "🟩 12ч день · 🟦 12ч ночь · 🟪 8ч день · 🟨 отпуск · "
+    "⬜ выходной · ➕ переработка · ❔ нет данных"
+)
+
+
+def _base_code(shift: Shift) -> str:
+    return (shift.code or "").replace("+П", "").strip()
 
 
 def _shift_description(shift: Shift | None) -> str:
     if shift is None:
         return "❔ Нет данных за этот день"
+    code = _base_code(shift)
     if shift.type == "day":
-        return f"🟩 Рабочий день — дневная смена ({shift.code or 'Д'})"
-    if shift.type == "night":
-        return f"🟦 Рабочий день — ночная смена ({shift.code or 'Н'})"
-    if shift.type == "vacation":
-        return "🟨 Отпуск"
-    if shift.type == "off":
-        return "⬜ Выходной"
-    return "❔ Нет данных за этот день"
+        text = (
+            "🟩 Рабочий день — дневная 12-часовая смена "
+            f"({code or 'Д'}, с ~08:00)"
+        )
+    elif shift.type == "night":
+        text = (
+            "🟦 Рабочий день — ночная 12-часовая смена "
+            f"({code or 'Н'}, с ~20:30)"
+        )
+    elif shift.type == "short_day":
+        text = (
+            "🟪 Рабочий день — 8-часовая смена "
+            f"({code or 'ДД'})"
+        )
+    elif shift.type == "vacation":
+        text = "🟨 Отпуск"
+    elif shift.type == "off":
+        text = "⬜ Выходной"
+    else:
+        text = "❔ Нет данных за этот день"
+    if shift.overtime:
+        text += "\n🟧 Переработка (+П)"
+    return text
 
 
 def day_status_text(
@@ -84,7 +106,12 @@ def today_report_text(
         return "\n".join(lines)
 
     next_day, next_type = step
-    label = f"{shift_emoji(next_type)} {shift_title(next_type)}"
+    next_title = (
+        "дневная смена"
+        if next_type == "day"
+        else "ночная 12-часовая смена"
+    )
+    label = f"{shift_emoji(next_type)} {next_title}"
     lines.append("")
 
     if next_month_missing:
@@ -107,7 +134,12 @@ def today_report_text(
     if next_day.day not in source.days:
         recipients = "нет данных на этот день"
     else:
-        target_employees = employees_on_shift(source, next_day, next_type)
+        target_types = (
+            {"day", "short_day"} if next_type == "day" else {"night"}
+        )
+        target_employees = employees_on_shift_types(
+            source, next_day, target_types
+        )
         if target_employees:
             names = ", ".join(
                 html.escape(target.name or "без имени")
@@ -130,7 +162,8 @@ def month_caption_text(
     if edit:
         hint = (
             "Нажмите день, чтобы изменить смену: "
-            "Дневная / Ночная / Отпуск / Выходной."
+            "Д (12ч) / Н (12ч) / ДД (8ч) / Отпуск / Выходной, "
+            "плюс переключатель +П."
         )
     else:
         hint = "Нажмите день, чтобы посмотреть статус."
@@ -139,7 +172,7 @@ def month_caption_text(
         f"👤 {html.escape(employee.name or 'без имени')}\n\n"
         f"{shifts_totals_text(schedule, employee)}\n\n"
         f"{hint}\n"
-        "🟩 день · 🟦 ночь · 🟨 отпуск · ⬜ выходной · ❔ нет данных"
+        f"{LEGEND}"
     )
 
 
@@ -174,6 +207,8 @@ def summary_text(
             "📊 <b>Итого</b>",
             f"🟩 дневных: {totals.get('day', 0)}",
             f"🟦 ночных: {totals.get('night', 0)}",
+            f"🟪 8-часовых: {totals.get('short_day', 0)}",
+            f"🟧 переработок: {totals.get('overtime', 0)}",
             f"🟨 отпуск: {totals.get('vacation', 0)}",
             f"⬜ выходных: {totals.get('off', 0)}",
         ]
@@ -221,7 +256,15 @@ def summary_text(
 
 
 def shifts_totals_text(schedule: Schedule, employee: Employee) -> str:
-    counts = {"day": 0, "night": 0, "vacation": 0, "off": 0, "unknown": 0}
+    counts = {
+        "day": 0,
+        "night": 0,
+        "short_day": 0,
+        "vacation": 0,
+        "off": 0,
+        "unknown": 0,
+        "overtime": 0,
+    }
     limit = days_in_month(schedule.year, schedule.month)
     for day in schedule.days:
         if day > limit:
@@ -229,21 +272,35 @@ def shifts_totals_text(schedule: Schedule, employee: Employee) -> str:
         shift = schedule.shift(employee.position, day)
         shift_type = shift.type if shift else "unknown"
         counts[shift_type] = counts.get(shift_type, 0) + 1
+        if shift is not None and shift.overtime:
+            counts["overtime"] += 1
     return (
         f"{shift_emoji('day')} {counts['day']} дн. · "
         f"{shift_emoji('night')} {counts['night']} ноч. · "
+        f"{shift_emoji('short_day')} {counts['short_day']} по 8ч · "
+        f"🟧 {counts['overtime']} перераб. · "
         f"{shift_emoji('vacation')} {counts['vacation']} отп. · "
         f"{shift_emoji('off')} {counts['off']} вых."
     )
 
 
 def _schedule_totals(schedule: Schedule) -> dict[str, int]:
-    totals = {"day": 0, "night": 0, "vacation": 0, "off": 0, "unknown": 0}
+    totals = {
+        "day": 0,
+        "night": 0,
+        "short_day": 0,
+        "vacation": 0,
+        "off": 0,
+        "unknown": 0,
+        "overtime": 0,
+    }
     limit = days_in_month(schedule.year, schedule.month)
     for (_, day), shift in schedule.shifts.items():
         if day > limit:
             continue
         totals[shift.type] = totals.get(shift.type, 0) + 1
+        if shift.overtime:
+            totals["overtime"] += 1
     return totals
 
 
@@ -270,6 +327,8 @@ def schedule_summary_text(
             "📊 <b>Итого</b>",
             f"🟩 дневных: {totals.get('day', 0)}",
             f"🟦 ночных: {totals.get('night', 0)}",
+            f"🟪 8-часовых: {totals.get('short_day', 0)}",
+            f"🟧 переработок: {totals.get('overtime', 0)}",
             f"🟨 отпуск: {totals.get('vacation', 0)}",
             f"⬜ выходных: {totals.get('off', 0)}",
             "",
@@ -355,5 +414,7 @@ def help_text() -> str:
         "загрузка картинок, /edit, /delete, /delete_workspace\n\n"
         "/cancel — отменить ввод или распознавание\n\n"
         f"Обозначения: {LEGEND}\n\n"
+        "Коды: Д/Н — 12ч, ДД — 8ч, НМ — ночь в начале/конце месяца, "
+        "+П — переработка.\n\n"
         "В личном чате можно просто написать дату: <code>15</code> или <code>15.12</code>."
     )

@@ -470,6 +470,59 @@ async def test_upload_completes_month_with_unknown_days(
     assert "❔" in message.last_text
 
 
+async def test_short_day_and_overtime_editing(storage: Storage) -> None:
+    group, schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, group.id)
+    await storage.set_employee(555, "Петров Пётр")
+    callback = FakeCallback()
+
+    await h.on_set_type(
+        callback,
+        UploadCB(
+            action="settype",
+            sid=schedule_id,
+            pos=1,
+            day=2,
+            value="short_day|menu",
+        ),
+        storage,
+    )
+    schedule = await storage.get_schedule(schedule_id)
+    assert schedule.shift(1, 2).type == "short_day"
+    assert schedule.shift(1, 2).code == "ДД"
+    assert schedule.shift(1, 2).overtime is False
+
+    await h.on_toggle_overtime(
+        callback,
+        UploadCB(
+            action="toggle_overtime",
+            sid=schedule_id,
+            pos=1,
+            day=2,
+            value="menu",
+        ),
+        storage,
+    )
+    schedule = await storage.get_schedule(schedule_id)
+    assert schedule.shift(1, 2).overtime is True
+    assert schedule.shift(1, 2).code == "ДД+П"
+
+    await h.on_toggle_overtime(
+        callback,
+        UploadCB(
+            action="toggle_overtime",
+            sid=schedule_id,
+            pos=1,
+            day=2,
+            value="menu",
+        ),
+        storage,
+    )
+    schedule = await storage.get_schedule(schedule_id)
+    assert schedule.shift(1, 2).overtime is False
+    assert schedule.shift(1, 2).code == "ДД"
+
+
 async def test_delete_workspace_only_owner(storage: Storage) -> None:
     group, _ = await _draft(storage)
     await storage.subscribe(777, group.id)

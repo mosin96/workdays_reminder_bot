@@ -1036,6 +1036,7 @@ async def _process_image(
                     cell.code,
                     cell.type,
                     cell.confidence,
+                    cell.overtime,
                 )
 
         if job.cancelled:
@@ -1749,6 +1750,33 @@ async def on_edit_done(
     )
 
 
+async def _render_shift_editor(
+    callback: CallbackQuery,
+    schedule: Schedule,
+    employee: Employee,
+    day: int,
+    context: str,
+) -> None:
+    try:
+        target = date(schedule.year, schedule.month, day)
+    except ValueError:
+        return
+    current = schedule.shift(employee.position, day)
+    await _safe_edit(
+        callback,
+        day_status_text(schedule, employee, target)
+        + "\n\nЧто поставить в этот день?",
+        reply_markup=shift_type_keyboard(
+            schedule.id,
+            employee.position,
+            day,
+            context=context,
+            current_type=current.type if current else None,
+            overtime=bool(current and current.overtime),
+        ),
+    )
+
+
 @router.callback_query(UploadCB.filter(F.action == "setday"))
 async def on_set_day(
     callback: CallbackQuery,
@@ -1765,21 +1793,12 @@ async def on_set_day(
         await callback.answer("Сотрудник не найден", show_alert=True)
         return
     await callback.answer()
-    try:
-        target = date(schedule.year, schedule.month, callback_data.day)
-    except ValueError:
-        return
-    context = callback_data.value or "menu"
-    await _safe_edit(
+    await _render_shift_editor(
         callback,
-        day_status_text(schedule, employee, target)
-        + "\n\nЧто поставить в этот день?",
-        reply_markup=shift_type_keyboard(
-            schedule.id,
-            employee.position,
-            callback_data.day,
-            context=context,
-        ),
+        schedule,
+        employee,
+        callback_data.day,
+        callback_data.value or "menu",
     )
 
 
@@ -1801,6 +1820,7 @@ async def on_set_type(
     codes = {
         "day": "Д",
         "night": "Н",
+        "short_day": "ДД",
         "vacation": "О",
         "off": None,
     }
@@ -1810,6 +1830,10 @@ async def on_set_type(
     if shift_type not in codes:
         await callback.answer("Неизвестный тип смены", show_alert=True)
         return
+    current = schedule.shift(employee.position, callback_data.day)
+    overtime = bool(current and current.overtime)
+    if shift_type not in {"day", "night", "short_day"}:
+        overtime = False
     ok = await storage.set_shift(
         schedule.id,
         schedule.group_id,
@@ -1817,6 +1841,7 @@ async def on_set_type(
         callback_data.day,
         codes[shift_type],
         shift_type,
+        overtime,
     )
     if not ok:
         await callback.answer("Не удалось сохранить", show_alert=True)
@@ -1825,17 +1850,62 @@ async def on_set_type(
     schedule = await storage.get_schedule(schedule.id)
     if schedule is None:
         return
-    back_action = "edit_done" if context == "quick" else "edit_days"
-    await _safe_edit(
+    await _render_shift_editor(
         callback,
-        month_caption_text(schedule, employee, edit=True),
-        reply_markup=days_keyboard(
-            schedule,
-            action="setday",
-            position=employee.position,
-            back_action=back_action,
-            context=context,
-        ),
+        schedule,
+        employee,
+        callback_data.day,
+        context,
+    )
+
+
+@router.callback_query(UploadCB.filter(F.action == "toggle_overtime"))
+async def on_toggle_overtime(
+    callback: CallbackQuery,
+    callback_data: UploadCB,
+    storage: Storage,
+) -> None:
+    schedule = await _load_schedule(callback, callback_data.sid, storage)
+    if schedule is None or not await _require_owner_callback(
+        callback, storage, schedule
+    ):
+        return
+    employee = schedule.employee(callback_data.pos)
+    if employee is None:
+        await callback.answer("Сотрудник не найден", show_alert=True)
+        return
+    current = schedule.shift(employee.position, callback_data.day)
+    if current is None or current.type not in {"day", "night", "short_day"}:
+        await callback.answer(
+            "Переработка доступна только для рабочих смен.",
+            show_alert=True,
+        )
+        return
+    overtime = not current.overtime
+    base_code = (current.code or "").replace("+П", "").strip() or "Д"
+    code = base_code + ("+П" if overtime else "")
+    ok = await storage.set_shift(
+        schedule.id,
+        schedule.group_id,
+        employee.position,
+        callback_data.day,
+        code,
+        current.type,
+        overtime,
+    )
+    if not ok:
+        await callback.answer("Не удалось сохранить", show_alert=True)
+        return
+    await callback.answer("Переработка включена" if overtime else "Переработка выключена")
+    schedule = await storage.get_schedule(schedule.id)
+    if schedule is None:
+        return
+    await _render_shift_editor(
+        callback,
+        schedule,
+        employee,
+        callback_data.day,
+        callback_data.value or "menu",
     )
 
 
