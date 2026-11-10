@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from threading import Event
 
@@ -143,6 +145,31 @@ class OcrResult:
         for cell in self.cells.values():
             result[cell.type] = result.get(cell.type, 0) + 1
         return result
+
+
+def complete_month(result: OcrResult, year: int, month: int) -> list[int]:
+    """Дополняет результат всеми датами месяца, отсутствующие — unknown."""
+
+    limit = monthrange(year, month)[1]
+    existing = set(result.days)
+    missing = [day for day in range(1, limit + 1) if day not in existing]
+    if not missing:
+        return []
+
+    positions = [employee.position for employee in result.employees]
+    for day in missing:
+        result.days.append(day)
+        result.weekend[day] = date(year, month, day).weekday() >= 5
+        for position in positions:
+            result.cells[(position, day)] = OcrCell(
+                day=day,
+                position=position,
+                code=None,
+                type=UNKNOWN,
+                confidence=0,
+            )
+    result.days.sort()
+    return missing
 
 
 # ---------------------------------------------------------------------------

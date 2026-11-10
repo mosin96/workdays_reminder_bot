@@ -58,6 +58,18 @@ def test_day_status_text() -> None:
     assert "Нет данных" in text
 
 
+def test_unknown_day_status() -> None:
+    schedule = _schedule()
+    schedule.days[4] = DayInfo(
+        day=4, weekday=date(2026, 11, 4).weekday(), weekend=False
+    )
+    schedule.shifts[(0, 4)] = Shift(0, 4, None, "unknown")
+    text = day_status_text(
+        schedule, schedule.employees[0], date(2026, 11, 4)
+    )
+    assert "Нет данных за этот день" in text
+
+
 def test_summary_text() -> None:
     text = schedule_summary_text(_schedule())
     assert "Иванов Иван" in text

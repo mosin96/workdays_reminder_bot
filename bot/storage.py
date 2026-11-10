@@ -19,7 +19,7 @@ from .models import (
     ScheduleGroup,
     Shift,
 )
-from .utils import normalize_name
+from .utils import days_in_month, normalize_name
 
 log = logging.getLogger(__name__)
 
@@ -590,8 +590,10 @@ class Storage:
             cursor = await self.db.execute(
                 "SELECT day FROM days WHERE schedule_id = ?", (schedule_id,)
             )
+            existing_days: set[int] = set()
             for row in await cursor.fetchall():
                 day = int(row["day"])
+                existing_days.add(day)
                 weekday = 0
                 try:
                     weekday = date(year, month, day).weekday()
@@ -601,6 +603,28 @@ class Storage:
                     "UPDATE days SET weekday = ? WHERE schedule_id = ? AND day = ?",
                     (weekday, schedule_id, day),
                 )
+
+            cursor = await self.db.execute(
+                "SELECT position FROM employees WHERE schedule_id = ?",
+                (schedule_id,),
+            )
+            positions = [int(row["position"]) for row in await cursor.fetchall()]
+            limit = days_in_month(year, month)
+            for day in range(1, limit + 1):
+                if day not in existing_days:
+                    weekday = date(year, month, day).weekday()
+                    await self.db.execute(
+                        "INSERT INTO days (schedule_id, day, weekday, is_weekend) "
+                        "VALUES (?, ?, ?, ?)",
+                        (schedule_id, day, weekday, int(weekday >= 5)),
+                    )
+                    for position in positions:
+                        await self.db.execute(
+                            "INSERT OR IGNORE INTO shifts "
+                            "(schedule_id, position, day, code, type, confidence) "
+                            "VALUES (?, ?, ?, NULL, 'unknown', 0)",
+                            (schedule_id, position, day),
+                        )
             await self.db.commit()
             return True
 

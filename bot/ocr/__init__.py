@@ -16,6 +16,7 @@ from .pipeline import (
     OcrEmployee,
     OcrError,
     OcrResult,
+    complete_month,
     parse_schedule_image,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "OcrEmployee",
     "OcrError",
     "OcrResult",
+    "complete_month",
     "parse_schedule_image",
 ]

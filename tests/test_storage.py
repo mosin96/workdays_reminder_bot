@@ -133,6 +133,8 @@ async def test_employee_weekday_and_shift_updates(storage: Storage) -> None:
     assert schedule.employees[0].name == "Сидоров Сидор"
     assert schedule.month == 12
     assert schedule.days[1].weekday == 1  # 1 декабря 2026 — вторник
+    assert schedule.days[31].weekday == 3  # 31 декабря 2026 — четверг
+    assert schedule.shift(0, 31).type == "unknown"
 
     assert await storage.set_shift(
         schedule_id, group.id, 1, 2, "Н", "night"

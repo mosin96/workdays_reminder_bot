@@ -65,7 +65,12 @@ from .keyboards import (
     switch_keyboard,
 )
 from .models import ChatSubscription, Employee, Schedule, ScheduleGroup
-from .ocr import OcrCancelled, OcrError, parse_schedule_image
+from .ocr import (
+    OcrCancelled,
+    OcrError,
+    complete_month,
+    parse_schedule_image,
+)
 from .processing import ProcessingRegistry
 from .services import (
     QueryError,
@@ -111,6 +116,24 @@ def _today(config: Config) -> date:
 
 def _plain(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
+
+
+def _format_day_ranges(days: list[int]) -> str:
+    if not days:
+        return ""
+    ranges: list[tuple[int, int]] = []
+    start = previous = days[0]
+    for day in days[1:]:
+        if day == previous + 1:
+            previous = day
+        else:
+            ranges.append((start, previous))
+            start = previous = day
+    ranges.append((start, previous))
+    return ", ".join(
+        str(first) if first == last else f"{first}–{last}"
+        for first, last in ranges
+    )
 
 
 async def _subscription(
@@ -989,6 +1012,14 @@ async def _process_image(
 
         if job.cancelled:
             raise OcrCancelled("Распознавание отменено.")
+
+        missing_days = complete_month(result, year, month)
+        if missing_days:
+            result.warnings.append(
+                "На скриншоте нет дней: "
+                f"{_format_day_ranges(missing_days)}. Они отмечены как "
+                "«нет данных» (❔). Заполнить вручную: /edit"
+            )
 
         if group is None:
             group = await storage.create_group(chat_id)

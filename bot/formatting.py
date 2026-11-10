@@ -9,6 +9,7 @@ from .models import Employee, Schedule, Shift
 from .ocr.pipeline import OcrResult
 from .services import employees_on_shift, next_shift
 from .utils import (
+    days_in_month,
     format_date_ru,
     format_month_ru,
     month_name,
@@ -31,7 +32,7 @@ def _shift_description(shift: Shift | None) -> str:
         return "🟨 Отпуск"
     if shift.type == "off":
         return "⬜ Выходной"
-    return "❔ Смена не распознана — исправьте расписание"
+    return "❔ Нет данных за этот день"
 
 
 def day_status_text(
@@ -221,7 +222,10 @@ def summary_text(
 
 def shifts_totals_text(schedule: Schedule, employee: Employee) -> str:
     counts = {"day": 0, "night": 0, "vacation": 0, "off": 0, "unknown": 0}
+    limit = days_in_month(schedule.year, schedule.month)
     for day in schedule.days:
+        if day > limit:
+            continue
         shift = schedule.shift(employee.position, day)
         shift_type = shift.type if shift else "unknown"
         counts[shift_type] = counts.get(shift_type, 0) + 1
@@ -235,7 +239,10 @@ def shifts_totals_text(schedule: Schedule, employee: Employee) -> str:
 
 def _schedule_totals(schedule: Schedule) -> dict[str, int]:
     totals = {"day": 0, "night": 0, "vacation": 0, "off": 0, "unknown": 0}
-    for shift in schedule.shifts.values():
+    limit = days_in_month(schedule.year, schedule.month)
+    for (_, day), shift in schedule.shifts.items():
+        if day > limit:
+            continue
         totals[shift.type] = totals.get(shift.type, 0) + 1
     return totals
 

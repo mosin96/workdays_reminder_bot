@@ -17,6 +17,8 @@ from bot.callbacks import (
     UploadCB,
 )
 from bot.config import Config
+from bot.ocr.pipeline import OcrCell, OcrEmployee, OcrResult
+from bot.processing import ProcessingRegistry
 from bot.storage import Storage
 
 
@@ -75,6 +77,14 @@ class FakeCallback:
 
     async def answer(self, text: str = "", show_alert: bool = False):
         self.answers.append((text, show_alert))
+
+
+class FakeBot:
+    async def get_file(self, file_id: str):
+        return SimpleNamespace(file_path="photos/test.jpg")
+
+    async def download_file(self, file_path: str, destination):
+        Path(destination).write_bytes(b"fake-image")
 
 
 @pytest.fixture()
@@ -406,6 +416,58 @@ async def test_today_handover_across_month(
     await h.cmd_today(message, storage, config)
     assert "принимает: Декабрьский Сотрудник" in message.last_text
     assert "Загрузите фото" not in message.last_text
+
+
+async def test_upload_completes_month_with_unknown_days(
+    storage: Storage, monkeypatch
+) -> None:
+    def fake_parse(path, tesseract_cmd, cancel_event):
+        return OcrResult(
+            month=11,
+            year=2026,
+            employees=[
+                OcrEmployee(0, "Иванов Иван"),
+                OcrEmployee(1, "Петров Пётр"),
+            ],
+            days=[1, 2, 3],
+            cells={
+                (0, 1): OcrCell(1, 0, "Н", "night", 90),
+                (1, 1): OcrCell(1, 1, "Д", "day", 90),
+                (0, 2): OcrCell(2, 0, None, "off", 0),
+                (1, 2): OcrCell(2, 1, "Д", "day", 90),
+                (0, 3): OcrCell(3, 0, "О", "vacation", 0),
+                (1, 3): OcrCell(3, 1, None, "off", 0),
+            },
+            weekend={1: True, 2: False, 3: False},
+            counts={},
+        )
+
+    monkeypatch.setattr(h, "parse_schedule_image", fake_parse)
+    message = FakeMessage()
+    message.photo = [
+        SimpleNamespace(file_id="photo", file_size=10, width=872)
+    ]
+    message.document = None
+    config = Config(bot_token="test", db_path=storage.path)
+
+    await h._process_image(
+        message,
+        FakeBot(),
+        config,
+        storage,
+        ProcessingRegistry(),
+        document=False,
+    )
+
+    subscription = await storage.get_subscription(555)
+    assert subscription is not None
+    draft = await storage.get_latest(subscription.group_id, status="draft")
+    assert draft is not None
+    assert sorted(draft.days) == list(range(1, 31))
+    assert draft.shift(0, 15).type == "unknown"
+    assert draft.shift(1, 15).type == "unknown"
+    assert "На скриншоте нет дней: 4–30" in message.last_text
+    assert "❔" in message.last_text
 
 
 async def test_delete_workspace_only_owner(storage: Storage) -> None:
