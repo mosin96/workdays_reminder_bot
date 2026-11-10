@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import date
 
 from bot.formatting import (
-    calendar_text,
     day_status_text,
+    month_caption_text,
     no_schedule_text,
     schedule_summary_text,
 )
@@ -57,17 +57,6 @@ def test_day_status_text() -> None:
     assert "Нет данных" in text
 
 
-def test_calendar_text() -> None:
-    text = calendar_text(_schedule(), _schedule().employees[1], 2026, 11)
-    assert "Ноябрь 2026" in text
-    assert "Петров Пётр" in text
-    assert "<pre>" in text
-    assert "Пн" in text and "Вс" in text
-    assert "2Д" in text
-    assert "3В" in text
-    assert "? — нет данных" in text
-
-
 def test_summary_text() -> None:
     text = schedule_summary_text(_schedule())
     assert "Иванов Иван" in text
@@ -76,6 +65,20 @@ def test_summary_text() -> None:
     assert "🟦 ночных: 1" in text
     assert "🟨 отпуск: 1" in text
     assert "Если всё верно" in text
+
+
+def test_month_caption_text() -> None:
+    schedule = _schedule()
+    text = month_caption_text(schedule, schedule.employees[1])
+    assert "Ноябрь 2026" in text
+    assert "Петров Пётр" in text
+    assert "Нажмите день" in text
+    assert "🟩 день" in text
+
+    edit_text = month_caption_text(
+        schedule, schedule.employees[1], edit=True
+    )
+    assert "изменить смену" in edit_text
 
 
 def test_no_schedule_text() -> None:

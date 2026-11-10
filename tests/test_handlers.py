@@ -158,6 +158,26 @@ async def test_today_and_date_commands(storage: Storage) -> None:
     assert "расписания нет" in message.last_text
 
 
+async def test_month_shows_colored_day_buttons(storage: Storage) -> None:
+    schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, 555)
+    await storage.set_employee(555, "Петров Пётр")
+    config = Config(bot_token="test", db_path=storage.path)
+
+    message = FakeMessage()
+    message.text = "/month 2026-11"
+    await h.cmd_month(message, storage, config)
+    assert "Нажмите день" in message.last_text
+    keyboard = message.sent[-1][1]
+    assert keyboard is not None
+    labels = [
+        button.text for row in keyboard.inline_keyboard for button in row
+    ]
+    assert "1🟩" in labels
+    assert "2🟩" in labels
+    assert "3⬜" in labels
+
+
 async def test_edit_current_month_for_selected_employee(
     storage: Storage,
 ) -> None:

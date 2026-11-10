@@ -7,7 +7,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .callbacks import CancelCB, EmployeeCB, RememberCB, UploadCB
 from .models import Employee, Schedule
-from .utils import MONTHS_NOMINATIVE, days_in_month, month_title
+from .utils import (
+    MONTHS_NOMINATIVE,
+    days_in_month,
+    month_title,
+    shift_emoji,
+)
 
 
 def _button(text: str, callback: CallbackData) -> InlineKeyboardButton:
@@ -215,9 +220,11 @@ def days_keyboard(
     for day in sorted(schedule.days):
         if day > limit:
             continue
+        shift = schedule.shift(position, day)
+        shift_type = shift.type if shift else "unknown"
         current_row.append(
             _button(
-                str(day),
+                f"{day}{shift_emoji(shift_type)}",
                 UploadCB(
                     action=action,
                     sid=schedule.id,

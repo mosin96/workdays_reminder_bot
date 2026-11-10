@@ -8,8 +8,6 @@ from datetime import date
 from .models import Employee, Schedule, Shift
 from .ocr.pipeline import OcrResult
 from .utils import (
-    WEEKDAYS_SHORT,
-    days_in_month,
     format_date_ru,
     format_month_ru,
     shift_emoji,
@@ -44,44 +42,24 @@ def day_status_text(
     )
 
 
-def calendar_text(
-    schedule: Schedule, employee: Employee, year: int, month: int
+def month_caption_text(
+    schedule: Schedule, employee: Employee, *, edit: bool = False
 ) -> str:
-    """Календарь месяца в виде моноширинной таблицы для Telegram."""
+    """Короткая подпись к календарю с цветными кнопками дней."""
 
-    status_letters = {
-        "day": "Д",
-        "night": "Н",
-        "vacation": "О",
-        "off": "В",
-        "unknown": "?",
-    }
-    limit = days_in_month(year, month)
-    first_weekday = date(year, month, 1).weekday()
-
-    header = "    " + "".join(f"{name:^4}" for name in WEEKDAYS_SHORT)
-    rows = [header]
-
-    # 4 символа на ячейку: два под номер дня, буква статуса и пробел.
-    week: list[str] = ["    "] * first_weekday
-    for day_number in range(1, limit + 1):
-        shift = schedule.shift(employee.position, day_number)
-        shift_type = shift.type if shift else "unknown"
-        letter = status_letters.get(shift_type, "?")
-        week.append(f"{day_number:2d}{letter} ")
-        if len(week) == 7:
-            rows.append("".join(week).rstrip())
-            week = []
-    if week:
-        rows.append("".join(week).rstrip())
-
-    grid = "\n".join(rows)
+    if edit:
+        hint = (
+            "Нажмите день, чтобы изменить смену: "
+            "Дневная / Ночная / Отпуск / Выходной."
+        )
+    else:
+        hint = "Нажмите день, чтобы посмотреть статус."
     return (
-        f"🗓 <b>{format_month_ru(year, month)}</b>\n"
+        f"🗓 <b>{format_month_ru(schedule.year, schedule.month)}</b>\n"
         f"👤 {html.escape(employee.name or 'без имени')}\n\n"
-        f"<pre>{grid}</pre>\n\n"
-        "Д — 🟩 дневная · Н — 🟦 ночная · О — 🟨 отпуск · "
-        "В — ⬜ выходной · ? — нет данных"
+        f"{shifts_totals_text(schedule, employee)}\n\n"
+        f"{hint}\n"
+        "🟩 день · 🟦 ночь · 🟨 отпуск · ⬜ выходной · ❔ нет данных"
     )
 
 

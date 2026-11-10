@@ -22,10 +22,10 @@ from aiogram.types import CallbackQuery, Message
 from .callbacks import CancelCB, EmployeeCB, RememberCB, UploadCB
 from .config import Config
 from .formatting import (
-    calendar_text,
     day_status_text,
     employee_picker_text,
     help_text,
+    month_caption_text,
     month_list_text,
     no_schedule_text,
     remember_text,
@@ -620,11 +620,13 @@ async def cmd_month(
         await _send_employee_picker(message, storage, schedule)
         return
     await message.answer(
-        calendar_text(schedule, employee, schedule.year, schedule.month),
+        month_caption_text(schedule, employee),
         reply_markup=days_keyboard(
             schedule,
             action="day",
+            position=employee.position,
             edit_position=employee.position,
+            back_action=None,
         ),
     )
 
@@ -656,9 +658,7 @@ async def cmd_edit(
         return
 
     await message.answer(
-        calendar_text(schedule, employee, schedule.year, schedule.month)
-        + "\n\nНажмите день, чтобы изменить смену: "
-        "Дневная / Ночная / Отпуск / Выходной.",
+        month_caption_text(schedule, employee, edit=True),
         reply_markup=days_keyboard(
             schedule,
             action="setday",
@@ -897,8 +897,7 @@ async def on_edit_employee(
     await callback.answer()
     await _safe_edit(
         callback,
-        calendar_text(schedule, employee, schedule.year, schedule.month)
-        + "\n\nНажмите день, чтобы изменить смену.",
+        month_caption_text(schedule, employee, edit=True),
         reply_markup=days_keyboard(
             schedule,
             action="setday",
@@ -926,10 +925,11 @@ async def on_edit_done(
     await _safe_edit(
         callback,
         "✅ Изменения сохранены.\n\n"
-        + calendar_text(schedule, employee, schedule.year, schedule.month),
+        + month_caption_text(schedule, employee),
         reply_markup=days_keyboard(
             schedule,
             action="day",
+            position=employee.position,
             edit_position=employee.position,
             back_action=None,
         ),
@@ -1011,8 +1011,7 @@ async def on_set_type(
     back_action = "edit_done" if context == "quick" else "edit_days"
     await _safe_edit(
         callback,
-        calendar_text(schedule, employee, schedule.year, schedule.month)
-        + "\n\nНажмите день, чтобы изменить смену.",
+        month_caption_text(schedule, employee, edit=True),
         reply_markup=days_keyboard(
             schedule,
             action="setday",
