@@ -7,10 +7,13 @@ from datetime import date
 
 from .models import Employee, Schedule, Shift
 from .ocr.pipeline import OcrResult
+from .services import employees_on_shift, next_shift
 from .utils import (
     format_date_ru,
     format_month_ru,
+    month_name,
     shift_emoji,
+    shift_title,
     weekday_name,
 )
 
@@ -40,6 +43,82 @@ def day_status_text(
         f"👤 {html.escape(employee.name or 'без имени')}\n"
         f"{_shift_description(shift)}"
     )
+
+
+def today_report_text(
+    schedule: Schedule,
+    employee: Employee,
+    day: date,
+    *,
+    next_schedule: Schedule | None = None,
+    next_month_missing: bool = False,
+    is_owner: bool = False,
+) -> str:
+    """Статус на сегодня + коллеги по смене + кому передавать смену."""
+
+    shift = schedule.shift(employee.position, day.day)
+    shift_type = shift.type if shift else "unknown"
+    base = day_status_text(schedule, employee, day)
+    if shift_type not in {"day", "night"}:
+        return base
+
+    lines = [base, ""]
+    colleagues = employees_on_shift(
+        schedule,
+        day,
+        shift_type,
+        exclude_position=employee.position,
+    )
+    if colleagues:
+        names = ", ".join(
+            html.escape(colleague.name or "без имени")
+            for colleague in colleagues
+        )
+        lines.append(f"👥 В этой же смене сегодня: {names}")
+    else:
+        lines.append("👥 В этой же смене сегодня: никого")
+
+    step = next_shift(day, shift_type)
+    if step is None:
+        return "\n".join(lines)
+
+    next_day, next_type = step
+    label = f"{shift_emoji(next_type)} {shift_title(next_type)}"
+    lines.append("")
+
+    if next_month_missing:
+        lines.append(
+            f"➡️ Следующая смена: {label}, {format_date_ru(next_day)}"
+        )
+        month_title = f"{month_name(next_day.month)} {next_day.year}"
+        if is_owner:
+            lines.append(
+                f"⚠️ Расписания на {month_title} нет. "
+                "Загрузите фото расписания следующего месяца."
+            )
+        else:
+            lines.append(
+                f"⚠️ Создатель ещё не загрузил расписание на {month_title}."
+            )
+        return "\n".join(lines)
+
+    source = next_schedule if next_schedule is not None else schedule
+    if next_day.day not in source.days:
+        recipients = "нет данных на этот день"
+    else:
+        target_employees = employees_on_shift(source, next_day, next_type)
+        if target_employees:
+            names = ", ".join(
+                html.escape(target.name or "без имени")
+                for target in target_employees
+            )
+            recipients = f"принимает: {names}"
+        else:
+            recipients = "по расписанию никого"
+    lines.append(
+        f"➡️ Передать смену: {label}, {format_date_ru(next_day)} — {recipients}"
+    )
+    return "\n".join(lines)
 
 
 def month_caption_text(
@@ -255,7 +334,7 @@ def help_text() -> str:
         "/unsubscribe — отписаться от общего расписания\n"
         "После 10 неудачных вводов кода чат блокируется.\n\n"
         "<b>Просмотр</b>\n"
-        "/today — смена сегодня\n"
+        "/today — смена сегодня, коллеги и передача смены\n"
         "/date 15 — 15-е число текущего месяца\n"
         "/date 15.12 — 15 декабря\n"
         "/date 2026-12-15 — конкретная дата\n"

@@ -9,6 +9,7 @@ from bot.formatting import (
     month_caption_text,
     no_schedule_text,
     schedule_summary_text,
+    today_report_text,
 )
 from bot.models import DayInfo, Employee, Schedule, Shift
 
@@ -85,3 +86,102 @@ def test_no_schedule_text() -> None:
     text = no_schedule_text(2026, 12, _schedule())
     assert "На декабрь 2026 расписания нет" in text
     assert "/month 2026-11" in text
+
+
+def test_today_report_day_and_handover() -> None:
+    schedule = _schedule()
+    employee = schedule.employees[1]  # Петров, 1-е — дневная
+    text = today_report_text(
+        schedule,
+        employee,
+        date(2026, 11, 1),
+        next_schedule=schedule,
+    )
+    assert "дневная смена" in text
+    assert "В этой же смене сегодня: никого" in text
+    assert "Передать смену" in text
+    assert "ночная смена" in text
+    assert "принимает: Иванов Иван" in text
+
+
+def test_today_report_night_handover_next_day() -> None:
+    schedule = _schedule()
+    employee = schedule.employees[0]  # Иванов, 1-е — ночная
+    text = today_report_text(
+        schedule,
+        employee,
+        date(2026, 11, 1),
+        next_schedule=schedule,
+    )
+    assert "ночная смена" in text
+    assert "2 ноября 2026" in text
+    assert "принимает: Петров Пётр" in text
+
+
+def test_today_report_no_recipients_and_day_off() -> None:
+    schedule = _schedule()
+    employee = schedule.employees[1]
+    text = today_report_text(
+        schedule,
+        employee,
+        date(2026, 11, 2),
+        next_schedule=schedule,
+    )
+    assert "Передать смену" in text
+    assert "по расписанию никого" in text
+
+    text = today_report_text(
+        schedule,
+        employee,
+        date(2026, 11, 3),
+        next_schedule=schedule,
+    )
+    assert "Выходной" in text
+    assert "этой же смене" not in text
+    assert "Передать смену" not in text
+
+
+def test_today_report_next_month_missing() -> None:
+    schedule = _schedule()
+    schedule.days[30] = DayInfo(
+        day=30, weekday=date(2026, 11, 30).weekday(), weekend=False
+    )
+    schedule.shifts[(0, 30)] = Shift(0, 30, "Н", "night")
+    employee = schedule.employees[0]
+
+    owner_text = today_report_text(
+        schedule,
+        employee,
+        date(2026, 11, 30),
+        next_month_missing=True,
+        is_owner=True,
+    )
+    assert "Следующая смена" in owner_text
+    assert "1 декабря 2026" in owner_text
+    assert "Загрузите фото" in owner_text
+
+    subscriber_text = today_report_text(
+        schedule,
+        employee,
+        date(2026, 11, 30),
+        next_month_missing=True,
+        is_owner=False,
+    )
+    assert "Создатель ещё не загрузил" in subscriber_text
+
+    december = Schedule(
+        id=2, group_id=1, year=2026, month=12, status="active"
+    )
+    december.employees = [Employee(0, "Декабрьский Сотрудник")]
+    december.days[1] = DayInfo(
+        day=1, weekday=date(2026, 12, 1).weekday(), weekend=False
+    )
+    december.shifts[(0, 1)] = Shift(0, 1, "Д", "day")
+    text = today_report_text(
+        schedule,
+        employee,
+        date(2026, 11, 30),
+        next_schedule=december,
+    )
+    assert "принимает: Декабрьский Сотрудник" in text
+    assert "Загрузите фото" not in text

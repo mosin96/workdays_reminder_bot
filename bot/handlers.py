@@ -40,6 +40,7 @@ from .formatting import (
     remember_text,
     schedule_summary_text,
     summary_text,
+    today_report_text,
 )
 from .keyboards import (
     cancel_keyboard,
@@ -65,6 +66,7 @@ from .processing import ProcessingRegistry
 from .services import (
     QueryError,
     find_employee,
+    next_shift,
     parse_date_query,
     parse_month_query,
 )
@@ -996,7 +998,64 @@ async def on_forget(
 async def cmd_today(
     message: Message, storage: Storage, config: Config
 ) -> None:
-    await _show_day(message, storage, config, _today(config))
+    today = _today(config)
+    context = await _group_for_chat(storage, message.chat.id)
+    if context is None:
+        await _start_prompt(message)
+        return
+    _, group = context
+    schedule = await storage.get_active(group.id, today.year, today.month)
+    if schedule is None:
+        latest = await storage.get_latest(group.id)
+        if group.owner_chat_id == message.chat.id:
+            await message.answer(no_schedule_text(today.year, today.month, latest))
+        else:
+            await message.answer(
+                f"На {format_month_ru(today.year, today.month)} расписания нет. "
+                "Создатель ещё не загрузил этот месяц."
+            )
+        return
+    employee = await _resolve_employee(storage, message.chat.id, schedule)
+    if employee is None:
+        await message.answer("Сначала выберите сотрудника для этого расписания.")
+        await _send_employee_picker(message, storage, schedule)
+        return
+
+    shift = schedule.shift(employee.position, today.day)
+    shift_type = shift.type if shift else "unknown"
+    next_schedule: Schedule | None = None
+    next_month_missing = False
+    if shift_type in {"day", "night"}:
+        step = next_shift(today, shift_type)
+        if step is not None:
+            next_day, _ = step
+            if (next_day.year, next_day.month) == (
+                schedule.year,
+                schedule.month,
+            ):
+                next_schedule = schedule
+            else:
+                next_schedule = await storage.get_active(
+                    group.id, next_day.year, next_day.month
+                )
+                next_month_missing = next_schedule is None
+
+    keyboard = None
+    if group.owner_chat_id == message.chat.id:
+        keyboard = day_edit_keyboard(
+            schedule.id, employee.position, today.day
+        )
+    await message.answer(
+        today_report_text(
+            schedule,
+            employee,
+            today,
+            next_schedule=next_schedule,
+            next_month_missing=next_month_missing,
+            is_owner=group.owner_chat_id == message.chat.id,
+        ),
+        reply_markup=keyboard,
+    )
 
 
 @router.message(Command("date"))

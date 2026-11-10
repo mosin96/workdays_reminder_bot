@@ -363,6 +363,50 @@ async def test_switch_subscription_requires_pending_state(
     assert "устарела" in forged.answers[-1][0].lower()
 
 
+async def test_today_handover_across_month(
+    storage: Storage, monkeypatch
+) -> None:
+    group = await storage.create_group(555)
+    await storage.subscribe(555, group.id)
+    november = await storage.save_draft(
+        group_id=group.id,
+        year=2026,
+        month=11,
+        employee_names=["Ночной Сотрудник", "Дневной Сотрудник"],
+        days=[30],
+        weekend={30: False},
+        cells={
+            (0, 30): ("Н", "night", 90),
+            (1, 30): ("Д", "day", 90),
+        },
+    )
+    await storage.activate(november, group.id)
+    await storage.set_employee(555, "Ночной Сотрудник")
+    config = Config(bot_token="test", db_path=storage.path)
+    monkeypatch.setattr(h, "_today", lambda cfg: date(2026, 11, 30))
+
+    message = FakeMessage()
+    await h.cmd_today(message, storage, config)
+    assert "Следующая смена" in message.last_text
+    assert "Загрузите фото" in message.last_text
+
+    december = await storage.save_draft(
+        group_id=group.id,
+        year=2026,
+        month=12,
+        employee_names=["Декабрьский Сотрудник"],
+        days=[1],
+        weekend={1: False},
+        cells={(0, 1): ("Д", "day", 90)},
+    )
+    await storage.activate(december, group.id)
+
+    message = FakeMessage()
+    await h.cmd_today(message, storage, config)
+    assert "принимает: Декабрьский Сотрудник" in message.last_text
+    assert "Загрузите фото" not in message.last_text
+
+
 async def test_delete_workspace_only_owner(storage: Storage) -> None:
     group, _ = await _draft(storage)
     await storage.subscribe(777, group.id)

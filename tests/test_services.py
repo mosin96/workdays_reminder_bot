@@ -6,7 +6,14 @@ from datetime import date
 
 import pytest
 
-from bot.services import QueryError, parse_date_query, parse_month_query
+from bot.services import (
+    QueryError,
+    employees_on_shift,
+    next_shift,
+    parse_date_query,
+    parse_month_query,
+)
+from bot.models import DayInfo, Employee, Schedule, Shift
 
 TODAY = date(2026, 11, 10)
 
@@ -55,3 +62,47 @@ def test_parse_month(text: str, expected: tuple[int, int]) -> None:
 def test_parse_month_errors(text: str) -> None:
     with pytest.raises(QueryError):
         parse_month_query(text, TODAY)
+
+
+def _shift_schedule() -> Schedule:
+    schedule = Schedule(
+        id=1, group_id=1, year=2026, month=11, status="active"
+    )
+    schedule.employees = [
+        Employee(0, "Первый"),
+        Employee(1, "Второй"),
+        Employee(2, "Третий"),
+    ]
+    for day in (1, 2):
+        schedule.days[day] = DayInfo(
+            day=day, weekday=date(2026, 11, day).weekday(), weekend=False
+        )
+    schedule.shifts[(0, 1)] = Shift(0, 1, "Д", "day")
+    schedule.shifts[(1, 1)] = Shift(1, 1, "Д", "day")
+    schedule.shifts[(2, 1)] = Shift(2, 1, "Н", "night")
+    schedule.shifts[(0, 2)] = Shift(0, 2, "Н", "night")
+    schedule.shifts[(2, 2)] = Shift(2, 2, "Д", "day")
+    return schedule
+
+
+def test_employees_on_shift() -> None:
+    schedule = _shift_schedule()
+    day = date(2026, 11, 1)
+    assert [
+        employee.name for employee in employees_on_shift(schedule, day, "day")
+    ] == ["Первый", "Второй"]
+    assert [
+        employee.name
+        for employee in employees_on_shift(
+            schedule, day, "day", exclude_position=0
+        )
+    ] == ["Второй"]
+    assert employees_on_shift(schedule, day, "vacation") == []
+
+
+def test_next_shift_sequence() -> None:
+    day = date(2026, 11, 30)
+    assert next_shift(day, "day") == (day, "night")
+    assert next_shift(day, "night") == (date(2026, 12, 1), "day")
+    assert next_shift(day, "off") is None
+    assert next_shift(day, "vacation") is None

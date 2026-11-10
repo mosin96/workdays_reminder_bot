@@ -156,5 +156,33 @@ def find_employee(schedule: Schedule, name: str | None) -> Employee | None:
     )
 
 
+def employees_on_shift(
+    schedule: Schedule,
+    day: date,
+    shift_type: str,
+    exclude_position: int | None = None,
+) -> list[Employee]:
+    """Сотрудники с указанным типом смены в конкретный день."""
+
+    result: list[Employee] = []
+    for employee in schedule.employees:
+        if employee.position == exclude_position:
+            continue
+        shift = schedule.shift(employee.position, day.day)
+        if shift is not None and shift.type == shift_type:
+            result.append(employee)
+    return result
+
+
+def next_shift(day: date, shift_type: str) -> tuple[date, str] | None:
+    """Следующая смена в порядке: день -> ночь того же дня -> день+1."""
+
+    if shift_type == "day":
+        return day, "night"
+    if shift_type == "night":
+        return day + timedelta(days=1), "day"
+    return None
+
+
 def month_of(day: date) -> tuple[int, int]:
     return day.year, day.month
