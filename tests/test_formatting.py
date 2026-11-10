@@ -61,8 +61,11 @@ def test_calendar_text() -> None:
     text = calendar_text(_schedule(), _schedule().employees[1], 2026, 11)
     assert "Ноябрь 2026" in text
     assert "Петров Пётр" in text
-    assert "🟩Д" in text
-    assert "⬜" in text
+    assert "<pre>" in text
+    assert "Пн" in text and "Вс" in text
+    assert "2Д" in text
+    assert "3В" in text
+    assert "? — нет данных" in text
 
 
 def test_summary_text() -> None:

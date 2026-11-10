@@ -8,11 +8,12 @@ from datetime import date
 from .models import Employee, Schedule, Shift
 from .ocr.pipeline import OcrResult
 from .utils import (
+    WEEKDAYS_SHORT,
+    days_in_month,
     format_date_ru,
     format_month_ru,
     shift_emoji,
     weekday_name,
-    weekday_short,
 )
 
 LEGEND = "🟩 день · 🟦 ночь · 🟨 отпуск · ⬜ выходной"
@@ -46,32 +47,42 @@ def day_status_text(
 def calendar_text(
     schedule: Schedule, employee: Employee, year: int, month: int
 ) -> str:
-    lines = [
-        f"🗓 <b>{format_month_ru(year, month)}</b>",
-        f"👤 {html.escape(employee.name or 'без имени')}",
-        "",
-    ]
-    week: list[str] = []
-    for day_number in sorted(schedule.days):
-        try:
-            current = date(year, month, day_number)
-        except ValueError:
-            continue
+    """Календарь месяца в виде моноширинной таблицы для Telegram."""
+
+    status_letters = {
+        "day": "Д",
+        "night": "Н",
+        "vacation": "О",
+        "off": "В",
+        "unknown": "?",
+    }
+    limit = days_in_month(year, month)
+    first_weekday = date(year, month, 1).weekday()
+
+    header = "    " + "".join(f"{name:^4}" for name in WEEKDAYS_SHORT)
+    rows = [header]
+
+    # 4 символа на ячейку: два под номер дня, буква статуса и пробел.
+    week: list[str] = ["    "] * first_weekday
+    for day_number in range(1, limit + 1):
         shift = schedule.shift(employee.position, day_number)
         shift_type = shift.type if shift else "unknown"
-        emoji = shift_emoji(shift_type)
-        code = ""
-        if shift and shift.type in {"day", "night"} and shift.code:
-            code = shift.code
-        week.append(f"{weekday_short(current.weekday())} {day_number} {emoji}{code}")
-        if current.weekday() == 6 or day_number == max(schedule.days):
-            lines.append(" · ".join(week))
+        letter = status_letters.get(shift_type, "?")
+        week.append(f"{day_number:2d}{letter} ")
+        if len(week) == 7:
+            rows.append("".join(week).rstrip())
             week = []
     if week:
-        lines.append(" · ".join(week))
-    lines.append("")
-    lines.append(LEGEND)
-    return "\n".join(lines)
+        rows.append("".join(week).rstrip())
+
+    grid = "\n".join(rows)
+    return (
+        f"🗓 <b>{format_month_ru(year, month)}</b>\n"
+        f"👤 {html.escape(employee.name or 'без имени')}\n\n"
+        f"<pre>{grid}</pre>\n\n"
+        "Д — 🟩 дневная · Н — 🟦 ночная · О — 🟨 отпуск · "
+        "В — ⬜ выходной · ? — нет данных"
+    )
 
 
 def summary_text(
