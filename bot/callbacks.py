@@ -21,3 +21,7 @@ class EmployeeCB(CallbackData, prefix="emp"):
 class RememberCB(CallbackData, prefix="rem"):
     sid: int
     remember: int = 0
+
+
+class CancelCB(CallbackData, prefix="cancel"):
+    pass

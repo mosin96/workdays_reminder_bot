@@ -19,7 +19,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from .callbacks import EmployeeCB, RememberCB, UploadCB
+from .callbacks import CancelCB, EmployeeCB, RememberCB, UploadCB
 from .config import Config
 from .formatting import (
     calendar_text,
@@ -33,6 +33,7 @@ from .formatting import (
     summary_text,
 )
 from .keyboards import (
+    cancel_keyboard,
     date_menu_keyboard,
     days_keyboard,
     delete_confirm_keyboard,
@@ -45,7 +46,8 @@ from .keyboards import (
     summary_keyboard,
 )
 from .models import Employee, Schedule
-from .ocr import OcrError, parse_schedule_image
+from .ocr import OcrCancelled, OcrError, parse_schedule_image
+from .processing import ProcessingRegistry
 from .services import (
     QueryError,
     find_employee,
@@ -196,8 +198,15 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext) -> None:
+async def cmd_cancel(
+    message: Message,
+    state: FSMContext,
+    processing: ProcessingRegistry,
+) -> None:
     await state.clear()
+    if processing.cancel(message.chat.id):
+        await message.answer("⏹ Отменяю распознавание…")
+        return
     await message.answer("Действие отменено.")
 
 
@@ -208,14 +217,24 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(F.photo)
 async def on_photo(
-    message: Message, bot: Bot, config: Config, storage: Storage
+    message: Message,
+    bot: Bot,
+    config: Config,
+    storage: Storage,
+    processing: ProcessingRegistry,
 ) -> None:
-    await _process_image(message, bot, config, storage, document=False)
+    await _process_image(
+        message, bot, config, storage, processing, document=False
+    )
 
 
 @router.message(F.document)
 async def on_document(
-    message: Message, bot: Bot, config: Config, storage: Storage
+    message: Message,
+    bot: Bot,
+    config: Config,
+    storage: Storage,
+    processing: ProcessingRegistry,
 ) -> None:
     document = message.document
     mime = (document.mime_type or "").lower() if document else ""
@@ -225,7 +244,18 @@ async def on_document(
             "Пришлите её как файл-изображение."
         )
         return
-    await _process_image(message, bot, config, storage, document=True)
+    await _process_image(
+        message, bot, config, storage, processing, document=True
+    )
+
+
+async def _finish_status(message: Message | None, text: str) -> None:
+    if message is None:
+        return
+    try:
+        await message.edit_text(text, reply_markup=None)
+    except TelegramBadRequest:
+        pass
 
 
 async def _process_image(
@@ -233,12 +263,25 @@ async def _process_image(
     bot: Bot,
     config: Config,
     storage: Storage,
+    processing: ProcessingRegistry,
     *,
     document: bool,
 ) -> None:
-    status = await message.answer("⏳ Распознаю таблицу, это займёт несколько секунд…")
+    job = await processing.try_start(message.chat.id)
+    if job is None:
+        await message.answer(
+            "⏳ В этом чате уже идёт распознавание. "
+            "Дождитесь окончания или отмените: /cancel"
+        )
+        return
+
+    status: Message | None = None
     temp_dir = Path(tempfile.mkdtemp(prefix="shift_ocr_"))
     try:
+        status = await message.answer(
+            "⏳ Ожидайте, распознаю таблицу…",
+            reply_markup=cancel_keyboard(),
+        )
         if document:
             meta = message.document
             file_id = meta.file_id
@@ -253,8 +296,9 @@ async def _process_image(
             filename = "photo.jpg"
 
         if size and size > config.max_image_mb * 1024 * 1024:
-            await status.edit_text(
-                f"Файл больше {config.max_image_mb} МБ — пришлите картинку поменьше."
+            await _finish_status(
+                status,
+                f"Файл больше {config.max_image_mb} МБ — пришлите картинку поменьше.",
             )
             return
 
@@ -264,8 +308,13 @@ async def _process_image(
         await bot.download_file(file.file_path, destination=path)
 
         result = await asyncio.to_thread(
-            parse_schedule_image, path, config.tesseract_cmd
+            parse_schedule_image,
+            path,
+            config.tesseract_cmd,
+            job.cancel_event,
         )
+        if job.cancelled:
+            raise OcrCancelled("Распознавание отменено.")
 
         today = _today(config)
         year = result.year or today.year
@@ -290,6 +339,9 @@ async def _process_image(
                     cell.confidence,
                 )
 
+        if job.cancelled:
+            raise OcrCancelled("Распознавание отменено.")
+
         schedule_id = await storage.save_draft(
             chat_id=message.chat.id,
             year=year,
@@ -305,6 +357,7 @@ async def _process_image(
             await status.delete()
         except TelegramBadRequest:
             pass
+        status = None
 
         await message.answer(
             summary_text(
@@ -321,26 +374,41 @@ async def _process_image(
                 has_issues=bool(result.issues),
             ),
         )
+    except OcrCancelled:
+        log.info("OCR отменён пользователем в чате %s", message.chat.id)
+        await _finish_status(status, "⏹ Распознавание отменено.")
     except OcrError as exc:
         log.warning("OCR error: %s", exc)
-        try:
-            await status.edit_text(f"⚠️ {exc}")
-        except TelegramBadRequest:
-            await message.answer(f"⚠️ {exc}")
+        await _finish_status(status, f"⚠️ {exc}")
     except Exception:
         log.exception("Ошибка обработки картинки")
-        try:
-            await status.edit_text(
-                "⚠️ Не удалось распознать таблицу. Пришлите скриншот целиком "
-                "файлом PNG/JPG или попробуйте картинку лучшего качества."
-            )
-        except TelegramBadRequest:
-            await message.answer(
-                "⚠️ Не удалось распознать таблицу. Пришлите скриншот целиком "
-                "файлом PNG/JPG или попробуйте картинку лучшего качества."
-            )
+        await _finish_status(
+            status,
+            "⚠️ Не удалось распознать таблицу. Пришлите скриншот целиком "
+            "файлом PNG/JPG или попробуйте картинку лучшего качества.",
+        )
     finally:
+        await processing.finish(message.chat.id, job)
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@router.callback_query(CancelCB.filter())
+async def on_cancel_click(
+    callback: CallbackQuery, processing: ProcessingRegistry
+) -> None:
+    if callback.message is not None:
+        chat_id = callback.message.chat.id
+    else:
+        chat_id = callback.from_user.id
+    if not processing.cancel(chat_id):
+        await callback.answer("Распознавание уже завершено.")
+        return
+    await callback.answer("⏹ Отменяю…")
+    if callback.message is not None:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
 
 
 # ---------------------------------------------------------------------------

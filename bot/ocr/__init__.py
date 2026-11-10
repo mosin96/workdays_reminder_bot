@@ -11,6 +11,7 @@
 """
 
 from .pipeline import (
+    OcrCancelled,
     OcrCell,
     OcrEmployee,
     OcrError,
@@ -19,6 +20,7 @@ from .pipeline import (
 )
 
 __all__ = [
+    "OcrCancelled",
     "OcrCell",
     "OcrEmployee",
     "OcrError",

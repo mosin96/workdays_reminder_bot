@@ -7,10 +7,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
+
+import pytest
 
 from conftest import requires_tesseract
 
-from bot.ocr import parse_schedule_image
+from bot.ocr import OcrCancelled, parse_schedule_image
+
+
+def test_cancel_before_ocr_start(sample_image: Path) -> None:
+    event = Event()
+    event.set()
+    with pytest.raises(OcrCancelled):
+        parse_schedule_image(sample_image, cancel_event=event)
 
 
 @requires_tesseract

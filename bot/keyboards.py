@@ -5,7 +5,7 @@ from __future__ import annotations
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .callbacks import EmployeeCB, RememberCB, UploadCB
+from .callbacks import CancelCB, EmployeeCB, RememberCB, UploadCB
 from .models import Employee, Schedule
 from .utils import MONTHS_NOMINATIVE, days_in_month, month_title
 
@@ -99,6 +99,14 @@ def remember_keyboard(schedule_id: int) -> InlineKeyboardMarkup:
                     RememberCB(sid=schedule_id, remember=0),
                 ),
             ]
+        ]
+    )
+
+
+def cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button("❌ Отменить распознавание", CancelCB())]
         ]
     )
 

@@ -8,6 +8,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event
 
 import cv2
 import numpy as np
@@ -87,6 +88,15 @@ _MONTH_ALIASES = {
 
 class OcrError(Exception):
     """Не удалось распознать таблицу."""
+
+
+class OcrCancelled(OcrError):
+    """Распознавание отменено пользователем."""
+
+
+def _check_cancel(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise OcrCancelled("Распознавание отменено.")
 
 
 @dataclass
@@ -489,10 +499,13 @@ def _prepare_variant(cell: np.ndarray, variant: tuple) -> np.ndarray | None:
     )
 
 
-def _ocr_shift(cell: np.ndarray) -> tuple[str, int]:
+def _ocr_shift(
+    cell: np.ndarray, cancel_event: Event | None = None
+) -> tuple[str, int]:
     best_text = ""
     best_conf = -1
     for variant in _VARIANTS:
+        _check_cancel(cancel_event)
         prepared = _prepare_variant(cell, variant)
         if prepared is None:
             continue
@@ -559,16 +572,20 @@ def _numeric_column(
 
 
 def parse_schedule_image(
-    path: str | Path, tesseract_cmd: str | None = None
+    path: str | Path,
+    tesseract_cmd: str | None = None,
+    cancel_event: Event | None = None,
 ) -> OcrResult:
     """Распознаёт картинку и возвращает структуру расписания."""
 
+    _check_cancel(cancel_event)
     if tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
     image = _load_image(path)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     height, width = gray.shape
+    _check_cancel(cancel_event)
 
     xs, ys = _detect_lines(gray)
     if len(xs) < 4 or len(ys) < 4:
@@ -576,17 +593,21 @@ def parse_schedule_image(
             "Не удалось найти таблицу. Пришлите скриншот целиком, лучше как файл PNG."
         )
 
+    _check_cancel(cancel_event)
     data_start = _find_data_start(gray, xs, ys)
     if len(ys) - data_start - 1 < 5:
         raise OcrError("В таблице не найдено строк с днями месяца.")
+    _check_cancel(cancel_event)
 
     # Месяц и год.
     month, year, month_text = _ocr_month(gray, xs[0])
+    _check_cancel(cancel_event)
 
     # Определяем служебные колонки с контрольными суммами (последние 0-2).
     column_count = len(xs) - 1
     numeric: list[bool] = []
     for column in range(max(1, column_count - 2), column_count):
+        _check_cancel(cancel_event)
         numeric.append(_numeric_column(gray, xs, ys, column, data_start))
 
     counts_columns: list[int] = []
@@ -607,9 +628,11 @@ def parse_schedule_image(
 
     header_y0 = ys[0]
     header_y1 = ys[data_start]
+    _check_cancel(cancel_event)
     employees = _ocr_employee_names(
         gray, xs, header_y0, header_y1, employee_columns
     )
+    _check_cancel(cancel_event)
 
     # Индексы колонок «день/ночь».
     count_day: int | None = counts_columns[0] if counts_columns else None
@@ -635,6 +658,7 @@ def parse_schedule_image(
     # Контрольные суммы.
     counts: dict[int, tuple[int | None, int | None]] = {}
     for day in days:
+        _check_cancel(cancel_event)
         y0, y1 = ys[data_start + day - 1], ys[data_start + day]
         day_value = night_value = None
         if count_day is not None:
@@ -648,6 +672,7 @@ def parse_schedule_image(
     # Выходные/праздники — по цвету фона в колонке с номером дня.
     weekend: dict[int, bool] = {}
     for day in days:
+        _check_cancel(cancel_event)
         y0, y1 = ys[data_start + day - 1], ys[data_start + day]
         cell = _crop(image, xs[0], xs[1], y0, y1, inset=5)
         weekend[day] = _is_blue(cell)
@@ -660,6 +685,7 @@ def parse_schedule_image(
     jobs: list[tuple[int, int, np.ndarray]] = []
     for position, column in enumerate(employee_columns):
         for day in days:
+            _check_cancel(cancel_event)
             y0, y1 = ys[data_start + day - 1], ys[data_start + day]
             cell = image[y0 + 4 : y1 - 4, xs[column] + 5 : xs[column + 1] - 5]
             if cell.size == 0:
@@ -681,7 +707,8 @@ def parse_schedule_image(
 
     def _run(job: tuple[int, int, np.ndarray]) -> tuple[int, int, str, int]:
         position, day, cell = job
-        text, confidence = _ocr_shift(cell)
+        _check_cancel(cancel_event)
+        text, confidence = _ocr_shift(cell, cancel_event)
         return position, day, text, confidence
 
     with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
@@ -699,6 +726,7 @@ def parse_schedule_image(
                     f"День {day}, {employees[position].name or 'без имени'}: "
                     f"не удалось распознать код смены «{text}»."
                 )
+    _check_cancel(cancel_event)
 
     # Сверка с контрольными суммами.
     for day in days:
@@ -747,6 +775,7 @@ def parse_schedule_image(
     # если контрольных сумм нет.
     if not cells:
         raise OcrError("Таблица найдена, но смены не распознаны.")
+    _check_cancel(cancel_event)
 
     log.info(
         "OCR: месяц=%s, сотрудников=%d, дней=%d, проблем=%d",

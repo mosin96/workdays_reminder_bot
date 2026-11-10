@@ -13,6 +13,8 @@ from aiogram.types import BotCommand
 
 from bot.config import Config, ConfigError
 from bot.handlers import router
+from bot.middleware import ProcessingMiddleware
+from bot.processing import ProcessingRegistry
 from bot.storage import Storage
 
 log = logging.getLogger(__name__)
@@ -48,6 +50,9 @@ async def main() -> None:
     dispatcher = Dispatcher()
     dispatcher["storage"] = storage
     dispatcher["config"] = config
+    dispatcher["processing"] = ProcessingRegistry()
+    router.message.outer_middleware(ProcessingMiddleware())
+    router.callback_query.outer_middleware(ProcessingMiddleware())
     dispatcher.include_router(router)
 
     try:
