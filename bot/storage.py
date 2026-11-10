@@ -322,6 +322,16 @@ class Storage:
             )
             await self.db.commit()
 
+    async def clear_employee(self, chat_id: int) -> None:
+        async with self._lock:
+            await self.db.execute(
+                "UPDATE chat_subscriptions SET employee_name = NULL, "
+                "employee_name_norm = NULL, remember = 0, updated_at = ? "
+                "WHERE chat_id = ?",
+                (_now(), chat_id),
+            )
+            await self.db.commit()
+
     # ------------------------------------------------------------------
     # Блокировка чата
     # ------------------------------------------------------------------

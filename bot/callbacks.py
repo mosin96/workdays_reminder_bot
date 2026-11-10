@@ -38,3 +38,7 @@ class SwitchCB(CallbackData, prefix="switch"):
 class DeleteWorkspaceCB(CallbackData, prefix="delws"):
     group_id: int
     confirm: int = 0
+
+
+class ResetCB(CallbackData, prefix="reset"):
+    action: str

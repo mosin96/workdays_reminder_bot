@@ -13,6 +13,7 @@ from bot.callbacks import (
     DeleteWorkspaceCB,
     EmployeeCB,
     RememberCB,
+    ResetCB,
     UploadCB,
 )
 from bot.config import Config
@@ -429,3 +430,105 @@ async def test_delete_workspace_only_owner(storage: Storage) -> None:
     assert await storage.get_group(group.id) is None
     assert await storage.get_subscription(555) is None
     assert await storage.get_subscription(777) is None
+
+
+async def test_reset_menu_owner_employee_and_month(
+    storage: Storage, monkeypatch
+) -> None:
+    monkeypatch.setattr(h, "_today", lambda cfg: date(2026, 11, 10))
+    group, schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, group.id)
+    await storage.set_employee(555, "Петров Пётр")
+    await storage.set_remember(555, True)
+    config = Config(bot_token="test", db_path=storage.path)
+
+    message = FakeMessage()
+    await h.cmd_reset(message, storage, config)
+    assert "Что сбросить" in message.last_text
+    keyboard = message.sent[-1][1]
+    callbacks = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+    assert any("reset:employee" in value for value in callbacks)
+    assert any("reset:delete_month" in value for value in callbacks)
+    assert any("reset:delete_workspace" in value for value in callbacks)
+    assert not any("reset:unsubscribe" in value for value in callbacks)
+
+    callback = FakeCallback()
+    state = FakeState()
+    await h.on_reset_action(
+        callback, ResetCB(action="employee"), state, storage, config
+    )
+    subscription = await storage.get_subscription(555)
+    assert subscription.employee_name is None
+    assert subscription.remember is False
+    assert "сброшены" in callback.message.last_text
+
+    await h.on_reset_action(
+        callback, ResetCB(action="delete_month"), state, storage, config
+    )
+    assert "Удалить расписание за" in callback.message.last_text
+    await h.on_reset_action(
+        callback,
+        ResetCB(action="delete_month_confirm"),
+        state,
+        storage,
+        config,
+    )
+    assert await storage.get_active(group.id, 2026, 11) is None
+    assert "удалено у всех" in callback.message.last_text
+
+
+async def test_reset_state_and_subscriber_actions(
+    storage: Storage, monkeypatch
+) -> None:
+    monkeypatch.setattr(h, "_today", lambda cfg: date(2026, 11, 10))
+    group, schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, group.id)
+    await storage.subscribe(777, group.id)
+    config = Config(bot_token="test", db_path=storage.path)
+
+    state = FakeState()
+    state.state = "waiting"
+    callback = FakeCallback(777)
+    await h.on_reset_action(
+        callback, ResetCB(action="state"), state, storage, config
+    )
+    assert state.state is None
+    assert "ввод сброшен" in callback.message.last_text
+
+    message = FakeMessage(777)
+    await h.cmd_reset(message, storage, config)
+    callbacks = [
+        button.callback_data
+        for row in message.sent[-1][1].inline_keyboard
+        for button in row
+    ]
+    assert any("reset:unsubscribe" in value for value in callbacks)
+    assert not any("reset:delete_workspace" in value for value in callbacks)
+
+    await h.on_reset_action(
+        callback, ResetCB(action="unsubscribe"), state, storage, config
+    )
+    assert "Отписаться" in callback.message.last_text
+    await h.on_reset_action(
+        callback,
+        ResetCB(action="unsubscribe_confirm"),
+        state,
+        storage,
+        config,
+    )
+    assert await storage.get_subscription(777) is None
+
+    forged = FakeCallback(777)
+    await h.on_reset_action(
+        forged,
+        ResetCB(action="delete_workspace_confirm"),
+        state,
+        storage,
+        config,
+    )
+    assert await storage.get_group(group.id) is not None
+    assert forged.answers[-1][1] is True

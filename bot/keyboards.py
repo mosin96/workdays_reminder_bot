@@ -10,6 +10,7 @@ from .callbacks import (
     DeleteWorkspaceCB,
     EmployeeCB,
     RememberCB,
+    ResetCB,
     StartCB,
     SwitchCB,
     UploadCB,
@@ -165,6 +166,78 @@ def delete_workspace_keyboard(group_id: int) -> InlineKeyboardMarkup:
                 ),
                 _button("⬅️ Отмена", StartCB(action="cancel")),
             ]
+        ]
+    )
+
+
+def reset_keyboard(
+    *,
+    has_subscription: bool,
+    is_owner: bool,
+    has_month: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_subscription:
+        rows.append(
+            [
+                _button(
+                    "👤 Сотрудник и запоминание",
+                    ResetCB(action="employee"),
+                )
+            ]
+        )
+    rows.append(
+        [_button("⌨️ Текущий ввод", ResetCB(action="state"))]
+    )
+    if has_subscription and not is_owner:
+        rows.append(
+            [
+                _button(
+                    "🚪 Отписаться от расписания",
+                    ResetCB(action="unsubscribe"),
+                )
+            ]
+        )
+    if has_subscription and is_owner:
+        if has_month:
+            rows.append(
+                [
+                    _button(
+                        "🗑 Удалить текущий месяц",
+                        ResetCB(action="delete_month"),
+                    )
+                ]
+            )
+        rows.append(
+            [
+                _button(
+                    "💥 Удалить всё расписание",
+                    ResetCB(action="delete_workspace"),
+                )
+            ]
+        )
+    rows.append([_button("⬅️ Отмена", ResetCB(action="cancel"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reset_confirm_keyboard(confirm_action: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "✅ Да, продолжить",
+                    ResetCB(action=confirm_action),
+                ),
+                _button("⬅️ Назад", ResetCB(action="menu")),
+            ]
+        ]
+    )
+
+
+def reset_done_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button("🧹 Ещё сбросить", ResetCB(action="menu"))]
         ]
     )
 

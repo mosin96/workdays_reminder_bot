@@ -67,6 +67,12 @@ async def test_group_code_and_subscription(storage: Storage) -> None:
     await storage.subscribe(2, group.id, "Иванов Иван")
     assert await storage.count_subscribers(group.id) == 2
 
+    await storage.clear_employee(1)
+    subscription = await storage.get_subscription(1)
+    assert subscription.employee_name is None
+    assert subscription.employee_name_norm is None
+    assert subscription.remember is False
+
     assert await storage.unsubscribe(2) is True
     assert await storage.get_subscription(2) is None
     assert await storage.count_subscribers(group.id) == 1

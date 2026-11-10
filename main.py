@@ -27,6 +27,7 @@ COMMANDS = [
     BotCommand(command="employee", description="Сменить сотрудника"),
     BotCommand(command="months", description="Загруженные месяцы"),
     BotCommand(command="share", description="Код расписания"),
+    BotCommand(command="reset", description="Сбросить сотрудника/подписку/месяц"),
     BotCommand(command="help", description="Справка"),
 ]
 

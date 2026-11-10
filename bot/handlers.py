@@ -24,6 +24,7 @@ from .callbacks import (
     DeleteWorkspaceCB,
     EmployeeCB,
     RememberCB,
+    ResetCB,
     StartCB,
     SwitchCB,
     UploadCB,
@@ -55,6 +56,9 @@ from .keyboards import (
     edit_schedule_keyboard,
     employees_keyboard,
     remember_keyboard,
+    reset_confirm_keyboard,
+    reset_done_keyboard,
+    reset_keyboard,
     shift_type_keyboard,
     start_keyboard,
     summary_keyboard,
@@ -205,6 +209,50 @@ async def _start_prompt(message: Message) -> None:
         "Подпишитесь на общее расписание по коду или создайте новое.",
         reply_markup=start_keyboard(),
     )
+
+
+async def _reset_info(
+    storage: Storage, chat_id: int, config: Config
+) -> tuple[ChatSubscription | None, ScheduleGroup | None, bool, bool]:
+    """(подписка, группа, создатель ли, есть ли месяц сейчас)."""
+
+    subscription = await storage.get_subscription(chat_id)
+    if subscription is None:
+        return None, None, False, False
+    group = await storage.get_group(subscription.group_id)
+    if group is None:
+        return None, None, False, False
+    today = _today(config)
+    month_schedule = await storage.get_active(
+        group.id, today.year, today.month
+    )
+    return (
+        subscription,
+        group,
+        group.owner_chat_id == chat_id,
+        month_schedule is not None,
+    )
+
+
+def _reset_menu_text(
+    has_subscription: bool, is_owner: bool, has_month: bool
+) -> str:
+    lines = ["🧹 <b>Сброс</b>", "", "Что сбросить?"]
+    if not has_subscription:
+        lines.extend(
+            [
+                "",
+                "Чат не подписан на расписание — доступен только сброс ввода.",
+            ]
+        )
+    elif not is_owner:
+        lines.extend(
+            [
+                "",
+                "Подписка и данные у остальных подписчиков не изменятся.",
+            ]
+        )
+    return "\n".join(lines)
 
 
 async def _ask_employee(
@@ -377,6 +425,27 @@ async def cmd_cancel(
         await message.answer("⏹ Отменяю распознавание…")
         return
     await message.answer("Действие отменено.")
+
+
+@router.message(Command("reset"))
+async def cmd_reset(
+    message: Message, storage: Storage, config: Config
+) -> None:
+    subscription, _, is_owner, has_month = await _reset_info(
+        storage, message.chat.id, config
+    )
+    await message.answer(
+        _reset_menu_text(
+            has_subscription=subscription is not None,
+            is_owner=is_owner,
+            has_month=has_month,
+        ),
+        reply_markup=reset_keyboard(
+            has_subscription=subscription is not None,
+            is_owner=is_owner,
+            has_month=has_month,
+        ),
+    )
 
 
 @router.message(Command("share"))
@@ -599,6 +668,184 @@ async def on_delete_workspace(
         "🗑 Расписание удалено вместе со всеми месяцами и подписками.\n"
         "/start — создать новое.",
     )
+
+
+async def _show_reset_menu(
+    callback: CallbackQuery, storage: Storage, config: Config
+) -> None:
+    if callback.message is None:
+        return
+    subscription, _, is_owner, has_month = await _reset_info(
+        storage, callback.message.chat.id, config
+    )
+    await _safe_edit(
+        callback,
+        _reset_menu_text(
+            has_subscription=subscription is not None,
+            is_owner=is_owner,
+            has_month=has_month,
+        ),
+        reply_markup=reset_keyboard(
+            has_subscription=subscription is not None,
+            is_owner=is_owner,
+            has_month=has_month,
+        ),
+    )
+
+
+@router.callback_query(ResetCB.filter())
+async def on_reset_action(
+    callback: CallbackQuery,
+    callback_data: ResetCB,
+    state: FSMContext,
+    storage: Storage,
+    config: Config,
+) -> None:
+    if callback.message is None:
+        return
+    chat_id = callback.message.chat.id
+    action = callback_data.action
+
+    if action == "cancel":
+        await callback.answer()
+        await _safe_edit(callback, "Отменено.")
+        return
+
+    if action == "menu":
+        await callback.answer()
+        await _show_reset_menu(callback, storage, config)
+        return
+
+    if action == "state":
+        await state.clear()
+        await callback.answer("Готово")
+        await _safe_edit(
+            callback,
+            "⌨️ Текущий ввод сброшен.",
+            reply_markup=reset_done_keyboard(),
+        )
+        return
+
+    subscription, group, is_owner, _ = await _reset_info(
+        storage, chat_id, config
+    )
+    if subscription is None or group is None:
+        await callback.answer("Чат не подписан на расписание.", show_alert=True)
+        return
+
+    today = _today(config)
+
+    if action == "employee":
+        await storage.clear_employee(chat_id)
+        await callback.answer("Готово")
+        await _safe_edit(
+            callback,
+            "👤 Выбранный сотрудник и запоминание сброшены.\n"
+            "Бот снова спросит, для кого показывать расписание.",
+            reply_markup=reset_done_keyboard(),
+        )
+        return
+
+    if action == "unsubscribe":
+        if is_owner:
+            await callback.answer(
+                "Вы создатель расписания. Его можно только удалить.",
+                show_alert=True,
+            )
+            return
+        await callback.answer()
+        await _safe_edit(
+            callback,
+            "🚪 Отписаться от расписания "
+            f"<code>{format_code(group.code)}</code>?\n"
+            "Данные у остальных подписчиков останутся.",
+            reply_markup=reset_confirm_keyboard("unsubscribe_confirm"),
+        )
+        return
+
+    if action == "unsubscribe_confirm":
+        if is_owner:
+            await callback.answer("Вы создатель расписания.", show_alert=True)
+            return
+        await storage.unsubscribe(chat_id)
+        await callback.answer("Готово")
+        await _safe_edit(
+            callback,
+            f"🚪 Чат отписан от расписания "
+            f"<code>{format_code(group.code)}</code>.\n"
+            "/start — подписаться снова или создать новое.",
+        )
+        return
+
+    if action == "delete_month":
+        if not is_owner:
+            await callback.answer("Удалять может только создатель.", show_alert=True)
+            return
+        schedule = await storage.get_active(group.id, today.year, today.month)
+        if schedule is None:
+            await callback.answer(
+                "За текущий месяц расписания нет.", show_alert=True
+            )
+            return
+        await callback.answer()
+        await _safe_edit(
+            callback,
+            f"🗑 Удалить расписание за "
+            f"<b>{format_month_ru(today.year, today.month)}</b>?\n"
+            "Месяц исчезнет у всех подписчиков.",
+            reply_markup=reset_confirm_keyboard("delete_month_confirm"),
+        )
+        return
+
+    if action == "delete_month_confirm":
+        if not is_owner:
+            await callback.answer("Удалять может только создатель.", show_alert=True)
+            return
+        schedule = await storage.get_active(group.id, today.year, today.month)
+        if schedule is None:
+            await callback.answer(
+                "За текущий месяц расписания нет.", show_alert=True
+            )
+            return
+        await storage.delete_month(group.id, today.year, today.month)
+        await callback.answer("Удалено")
+        await _safe_edit(
+            callback,
+            f"🗑 Расписание за "
+            f"<b>{format_month_ru(today.year, today.month)}</b> "
+            "удалено у всех подписчиков.",
+            reply_markup=reset_done_keyboard(),
+        )
+        return
+
+    if action == "delete_workspace":
+        if not is_owner:
+            await callback.answer("Удалять может только создатель.", show_alert=True)
+            return
+        await callback.answer()
+        await _safe_edit(
+            callback,
+            "💥 Удалить всё расписание "
+            f"<code>{format_code(group.code)}</code>?\n"
+            "Все месяцы и подписки будут удалены безвозвратно.",
+            reply_markup=reset_confirm_keyboard("delete_workspace_confirm"),
+        )
+        return
+
+    if action == "delete_workspace_confirm":
+        if not is_owner:
+            await callback.answer("Удалять может только создатель.", show_alert=True)
+            return
+        await storage.delete_group(group.id)
+        await callback.answer("Удалено")
+        await _safe_edit(
+            callback,
+            "💥 Расписание удалено вместе со всеми месяцами и подписками.\n"
+            "/start — создать новое.",
+        )
+        return
+
+    await callback.answer()
 
 
 # ---------------------------------------------------------------------------
