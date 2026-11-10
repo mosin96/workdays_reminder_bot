@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    container_name: shift-schedule-bot
+    env_file: .env
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+    restart: unless-stopped
+    volumes:
+      - bot_data:/app/data
+
+volumes:
+  bot_data:
+    name: shift_bot_data

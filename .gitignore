@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.idea/
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+
+# Локальные примеры с персональными данными — не коммитим.
+img.png
+example.json
