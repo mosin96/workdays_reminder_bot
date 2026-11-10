@@ -205,7 +205,9 @@ def days_keyboard(
     action: str,
     *,
     position: int = 0,
-    back_action: str = "back",
+    back_action: str | None = "back",
+    context: str = "menu",
+    edit_position: int | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     current_row: list[InlineKeyboardButton] = []
@@ -221,6 +223,7 @@ def days_keyboard(
                     sid=schedule.id,
                     pos=position,
                     day=day,
+                    value=context,
                 ),
             )
         )
@@ -229,20 +232,85 @@ def days_keyboard(
             current_row = []
     if current_row:
         rows.append(current_row)
-    rows.append(
-        [
-            _button(
-                "⬅️ Назад",
-                UploadCB(action=back_action, sid=schedule.id, pos=position),
-            )
-        ]
-    )
+    if edit_position is not None:
+        rows.append(
+            [
+                _button(
+                    "✏️ Изменить расписание",
+                    UploadCB(
+                        action="edit_emp",
+                        sid=schedule.id,
+                        pos=edit_position,
+                        value="quick",
+                    ),
+                )
+            ]
+        )
+    if back_action is not None:
+        rows.append(
+            [
+                _button(
+                    "⬅️ Назад",
+                    UploadCB(
+                        action=back_action, sid=schedule.id, pos=position
+                    ),
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def shift_type_keyboard(
+def day_edit_keyboard(
     schedule_id: int, position: int, day: int
 ) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "✏️ Изменить этот день",
+                    UploadCB(
+                        action="setday",
+                        sid=schedule_id,
+                        pos=position,
+                        day=day,
+                        value="quick",
+                    ),
+                )
+            ]
+        ]
+    )
+
+
+def edit_schedule_keyboard(
+    schedule_id: int, position: int
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "✏️ Изменить расписание",
+                    UploadCB(
+                        action="edit_emp",
+                        sid=schedule_id,
+                        pos=position,
+                        value="quick",
+                    ),
+                )
+            ]
+        ]
+    )
+
+
+def shift_type_keyboard(
+    schedule_id: int,
+    position: int,
+    day: int,
+    *,
+    context: str = "menu",
+) -> InlineKeyboardMarkup:
+    def value(shift_type: str) -> str:
+        return f"{shift_type}|{context}"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -253,7 +321,7 @@ def shift_type_keyboard(
                         sid=schedule_id,
                         pos=position,
                         day=day,
-                        value="day",
+                        value=value("day"),
                     ),
                 ),
                 _button(
@@ -263,7 +331,7 @@ def shift_type_keyboard(
                         sid=schedule_id,
                         pos=position,
                         day=day,
-                        value="night",
+                        value=value("night"),
                     ),
                 ),
             ],
@@ -275,7 +343,7 @@ def shift_type_keyboard(
                         sid=schedule_id,
                         pos=position,
                         day=day,
-                        value="vacation",
+                        value=value("vacation"),
                     ),
                 ),
                 _button(
@@ -285,7 +353,7 @@ def shift_type_keyboard(
                         sid=schedule_id,
                         pos=position,
                         day=day,
-                        value="off",
+                        value=value("off"),
                     ),
                 ),
             ],
@@ -296,6 +364,9 @@ def shift_type_keyboard(
                         action="edit_emp",
                         sid=schedule_id,
                         pos=position,
+                        value="quick"
+                        if context == "quick"
+                        else "menu",
                     ),
                 )
             ],

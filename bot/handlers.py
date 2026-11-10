@@ -35,11 +35,13 @@ from .formatting import (
 from .keyboards import (
     cancel_keyboard,
     date_menu_keyboard,
+    day_edit_keyboard,
     days_keyboard,
     delete_confirm_keyboard,
     edit_days_keyboard,
     edit_menu_keyboard,
     edit_names_keyboard,
+    edit_schedule_keyboard,
     employees_keyboard,
     remember_keyboard,
     shift_type_keyboard,
@@ -127,7 +129,11 @@ async def _ask_employee(
                 f"👤 Сотрудник: <b>{html.escape(employee.name)}</b> (запомнен).\n\n"
                 "/today — смена сегодня\n"
                 "/month — календарь месяца\n"
-                "/employee — сменить сотрудника"
+                "/edit — изменить смены вручную\n"
+                "/employee — сменить сотрудника",
+                reply_markup=edit_schedule_keyboard(
+                    schedule.id, employee.position
+                ),
             )
             return
     await message.answer(
@@ -173,7 +179,12 @@ async def _show_day(
         )
         await _send_employee_picker(message, storage, schedule)
         return
-    await message.answer(day_status_text(schedule, employee, target))
+    await message.answer(
+        day_status_text(schedule, employee, target),
+        reply_markup=day_edit_keyboard(
+            schedule.id, employee.position, target.day
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +481,11 @@ async def on_employee_selected(
             f"👤 Сотрудник: <b>{name}</b>.\n\n"
             "/today — смена сегодня\n"
             "/month — календарь месяца\n"
-            "/employee — сменить сотрудника"
+            "/edit — изменить смены вручную\n"
+            "/employee — сменить сотрудника",
+            reply_markup=edit_schedule_keyboard(
+                schedule.id, employee.position
+            ),
         )
     elif callback.message is not None:
         await callback.message.answer(
@@ -506,7 +521,13 @@ async def on_remember(
             "/today — смена сегодня\n"
             "/date 15 — конкретная дата\n"
             "/month — календарь месяца\n"
-            "/help — все команды"
+            "/edit — изменить смены вручную\n"
+            "/help — все команды",
+            reply_markup=(
+                edit_schedule_keyboard(schedule.id, employee.position)
+                if employee is not None
+                else None
+            ),
         )
 
 
@@ -600,7 +621,51 @@ async def cmd_month(
         return
     await message.answer(
         calendar_text(schedule, employee, schedule.year, schedule.month),
-        reply_markup=days_keyboard(schedule, action="day"),
+        reply_markup=days_keyboard(
+            schedule,
+            action="day",
+            edit_position=employee.position,
+        ),
+    )
+
+
+@router.message(Command("edit"))
+async def cmd_edit(
+    message: Message, storage: Storage, config: Config
+) -> None:
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1] if len(parts) > 1 else ""
+    try:
+        year, month = parse_month_query(arg, _today(config))
+    except QueryError as exc:
+        await message.answer(f"⚠️ {html.escape(str(exc))}")
+        return
+
+    schedule = await storage.get_active(message.chat.id, year, month)
+    if schedule is None:
+        latest = await storage.get_latest(message.chat.id)
+        await message.answer(no_schedule_text(year, month, latest))
+        return
+    employee = await _resolve_employee(storage, schedule)
+    if employee is None:
+        await message.answer(
+            f"Для {format_month_ru(schedule.year, schedule.month)} "
+            "сначала выберите сотрудника."
+        )
+        await _send_employee_picker(message, storage, schedule)
+        return
+
+    await message.answer(
+        calendar_text(schedule, employee, schedule.year, schedule.month)
+        + "\n\nНажмите день, чтобы изменить смену: "
+        "Дневная / Ночная / Отпуск / Выходной.",
+        reply_markup=days_keyboard(
+            schedule,
+            action="setday",
+            position=employee.position,
+            back_action="edit_done",
+            context="quick",
+        ),
     )
 
 
@@ -827,6 +892,8 @@ async def on_edit_employee(
     if employee is None:
         await callback.answer("Сотрудник не найден", show_alert=True)
         return
+    context = callback_data.value or "menu"
+    back_action = "edit_done" if context == "quick" else "edit_days"
     await callback.answer()
     await _safe_edit(
         callback,
@@ -836,7 +903,35 @@ async def on_edit_employee(
             schedule,
             action="setday",
             position=employee.position,
-            back_action="edit_days",
+            back_action=back_action,
+            context=context,
+        ),
+    )
+
+
+@router.callback_query(UploadCB.filter(F.action == "edit_done"))
+async def on_edit_done(
+    callback: CallbackQuery,
+    callback_data: UploadCB,
+    storage: Storage,
+) -> None:
+    schedule = await _load_schedule(callback, callback_data.sid, storage)
+    if schedule is None:
+        return
+    employee = schedule.employee(callback_data.pos)
+    if employee is None:
+        await callback.answer("Сотрудник не найден", show_alert=True)
+        return
+    await callback.answer("Изменения сохранены")
+    await _safe_edit(
+        callback,
+        "✅ Изменения сохранены.\n\n"
+        + calendar_text(schedule, employee, schedule.year, schedule.month),
+        reply_markup=days_keyboard(
+            schedule,
+            action="day",
+            edit_position=employee.position,
+            back_action=None,
         ),
     )
 
@@ -859,12 +954,16 @@ async def on_set_day(
         target = date(schedule.year, schedule.month, callback_data.day)
     except ValueError:
         return
+    context = callback_data.value or "menu"
     await _safe_edit(
         callback,
         day_status_text(schedule, employee, target)
         + "\n\nЧто поставить в этот день?",
         reply_markup=shift_type_keyboard(
-            schedule.id, employee.position, callback_data.day
+            schedule.id,
+            employee.position,
+            callback_data.day,
+            context=context,
         ),
     )
 
@@ -888,7 +987,9 @@ async def on_set_type(
         "vacation": "О",
         "off": None,
     }
-    shift_type = callback_data.value
+    parts = (callback_data.value or "").split("|", 1)
+    shift_type = parts[0]
+    context = parts[1] if len(parts) > 1 and parts[1] else "menu"
     if shift_type not in codes:
         await callback.answer("Неизвестный тип смены", show_alert=True)
         return
@@ -907,6 +1008,7 @@ async def on_set_type(
     schedule = await storage.get_schedule(schedule.id, schedule.chat_id)
     if schedule is None:
         return
+    back_action = "edit_done" if context == "quick" else "edit_days"
     await _safe_edit(
         callback,
         calendar_text(schedule, employee, schedule.year, schedule.month)
@@ -915,7 +1017,8 @@ async def on_set_type(
             schedule,
             action="setday",
             position=employee.position,
-            back_action="edit_days",
+            back_action=back_action,
+            context=context,
         ),
     )
 

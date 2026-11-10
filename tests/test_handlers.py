@@ -150,8 +150,72 @@ async def test_today_and_date_commands(storage: Storage) -> None:
     message = FakeMessage()
     await h._show_day(message, storage, config, date(2026, 11, 1))
     assert "Петров Пётр" in message.last_text
+    assert message.sent[-1][1] is not None
 
     message = FakeMessage()
     message.text = "/date 15.12"
     await h.cmd_date(message, storage, config)
     assert "расписания нет" in message.last_text
+
+
+async def test_edit_current_month_for_selected_employee(
+    storage: Storage,
+) -> None:
+    schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, 555)
+    await storage.set_employee(555, "Петров Пётр")
+    config = Config(bot_token="test", db_path=storage.path)
+
+    message = FakeMessage()
+    message.text = "/edit 2026-11"
+    await h.cmd_edit(message, storage, config)
+    assert "Нажмите день" in message.last_text
+    keyboard = message.sent[-1][1]
+    assert keyboard is not None
+    callbacks = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+    assert any("setday" in value for value in callbacks)
+
+    callback = FakeCallback()
+    await h.on_set_day(
+        callback,
+        UploadCB(
+            action="setday", sid=schedule_id, pos=1, day=2, value="quick"
+        ),
+        storage,
+    )
+    assert "Что поставить" in callback.message.last_text
+
+    await h.on_set_type(
+        callback,
+        UploadCB(
+            action="settype",
+            sid=schedule_id,
+            pos=1,
+            day=2,
+            value="night|quick",
+        ),
+        storage,
+    )
+    schedule = await storage.get_schedule(schedule_id, 555)
+    assert schedule is not None
+    assert schedule.shift(1, 2).type == "night"
+
+    keyboard = callback.message.sent[-1][1]
+    assert keyboard is not None
+    callbacks = [
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+    ]
+    assert any("edit_done" in value for value in callbacks)
+
+    await h.on_edit_done(
+        callback,
+        UploadCB(action="edit_done", sid=schedule_id, pos=1),
+        storage,
+    )
+    assert "Изменения сохранены" in callback.message.last_text

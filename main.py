@@ -23,6 +23,7 @@ COMMANDS = [
     BotCommand(command="today", description="Смена сегодня"),
     BotCommand(command="date", description="Смена на дату (например, /date 15.12)"),
     BotCommand(command="month", description="Календарь месяца"),
+    BotCommand(command="edit", description="Изменить смены вручную"),
     BotCommand(command="employee", description="Сменить сотрудника"),
     BotCommand(command="months", description="Загруженные месяцы"),
     BotCommand(command="help", description="Справка"),
