@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +13,8 @@ from bot.callbacks import (
     DeleteWorkspaceCB,
     EmployeeCB,
     RememberCB,
+    ReminderAckCB,
+    ReminderCB,
     ResetCB,
     UploadCB,
 )
@@ -567,9 +569,17 @@ async def test_reset_menu_owner_employee_and_month(
         for button in row
     ]
     assert any("reset:employee" in value for value in callbacks)
+    assert any("reset:reminders" in value for value in callbacks)
     assert any("reset:delete_month" in value for value in callbacks)
     assert any("reset:delete_workspace" in value for value in callbacks)
     assert not any("reset:unsubscribe" in value for value in callbacks)
+
+    callback = FakeCallback()
+    state = FakeState()
+    await h.on_reset_action(
+        callback, ResetCB(action="reminders"), state, storage, config
+    )
+    assert "Напоминания о сменах" in callback.message.last_text
 
     callback = FakeCallback()
     state = FakeState()
@@ -647,3 +657,128 @@ async def test_reset_state_and_subscriber_actions(
     )
     assert await storage.get_group(group.id) is not None
     assert forged.answers[-1][1] is True
+
+
+async def test_reminders_command_and_settings(storage: Storage) -> None:
+    group, schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, group.id)
+    await storage.set_employee(555, "Петров Пётр")
+
+    owner = FakeMessage()
+    await h.cmd_reminders(owner, storage)
+    assert "Напоминания о сменах" in owner.last_text
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert settings.mode == "day_before"
+    assert settings.enabled is False
+
+    await storage.subscribe(777, group.id)
+    subscriber = FakeMessage(777)
+    await h.cmd_reminders(subscriber, storage)
+    assert "только создатель" in subscriber.last_text
+
+    config = Config(bot_token="test", db_path=storage.path)
+    state = FakeState()
+    callback = FakeCallback()
+
+    await h.on_reminder_action(
+        callback,
+        ReminderCB(action="mode", value="same_day"),
+        state,
+        storage,
+        config,
+    )
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert settings.mode == "same_day"
+
+    await h.on_reminder_action(
+        callback,
+        ReminderCB(action="type", value="night"),
+        state,
+        storage,
+        config,
+    )
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert "night" not in settings.shift_types
+
+    await h.on_reminder_action(
+        callback,
+        ReminderCB(action="time"),
+        state,
+        storage,
+        config,
+    )
+    assert "Выберите время" in callback.message.last_text
+
+    await h.on_reminder_action(
+        callback,
+        ReminderCB(action="settime", value="21-00"),
+        state,
+        storage,
+        config,
+    )
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert settings.time == "21:00"
+
+    await h.on_reminder_action(
+        callback,
+        ReminderCB(action="toggle"),
+        state,
+        storage,
+        config,
+    )
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert settings.enabled is True
+
+
+async def test_reminder_custom_time_and_ack(storage: Storage) -> None:
+    group, schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, group.id)
+    await storage.set_employee(555, "Петров Пётр")
+    await storage.save_reminder_settings(
+        chat_id=555,
+        group_id=group.id,
+        mode="same_day",
+        time="20:00",
+        shift_types=("day",),
+        enabled=True,
+    )
+
+    state = FakeState()
+    state.data = {"group_id": group.id}
+    message = FakeMessage()
+    message.text = "25:00"
+    await h.on_reminder_time_text(message, state, storage)
+    assert "⚠️" in message.last_text
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert settings.time == "20:00"
+
+    message.text = "9:05"
+    await h.on_reminder_time_text(message, state, storage)
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert settings.time == "09:05"
+
+    delivery = await storage.create_reminder_delivery(
+        chat_id=555,
+        group_id=group.id,
+        employee_position=1,
+        shift_date=date(2026, 11, 12),
+        shift_type="day",
+        mode="same_day",
+        due_at=datetime(2026, 11, 12, 9, 5, tzinfo=timezone.utc),
+    )
+    callback = FakeCallback()
+    callback.message.text = "🔔 Напоминание о смене"
+    await h.on_reminder_ack(
+        callback, ReminderAckCB(id=delivery.id), storage
+    )
+    delivery = await storage.get_reminder_delivery_by_id(delivery.id)
+    assert delivery is not None
+    assert delivery.acked_at is not None
+    assert "Напоминание получено" in callback.message.last_text

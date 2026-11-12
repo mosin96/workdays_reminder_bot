@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sys
 
@@ -15,6 +16,7 @@ from bot.config import Config, ConfigError
 from bot.handlers import router
 from bot.middleware import BlockedChatMiddleware, ProcessingMiddleware
 from bot.processing import ProcessingRegistry
+from bot.reminders import ReminderScheduler
 from bot.storage import Storage
 
 log = logging.getLogger(__name__)
@@ -27,6 +29,7 @@ COMMANDS = [
     BotCommand(command="employee", description="Сменить сотрудника"),
     BotCommand(command="months", description="Загруженные месяцы"),
     BotCommand(command="share", description="Код расписания"),
+    BotCommand(command="reminders", description="Напоминания о сменах"),
     BotCommand(command="reset", description="Сбросить сотрудника/подписку/месяц"),
     BotCommand(command="help", description="Справка"),
 ]
@@ -66,9 +69,16 @@ async def main() -> None:
         log.warning("Не удалось установить меню команд", exc_info=True)
 
     log.info("Бот запущен, часовой пояс: %s", config.timezone)
+    reminder_task = asyncio.create_task(
+        ReminderScheduler(bot, storage, config).run(),
+        name="reminder-scheduler",
+    )
     try:
         await dispatcher.start_polling(bot)
     finally:
+        reminder_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reminder_task
         await storage.close()
         await bot.session.close()
         log.info("Бот остановлен")

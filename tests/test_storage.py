@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -268,3 +269,77 @@ async def test_existing_db_gets_overtime_column(tmp_path: Path) -> None:
         assert "overtime" in columns
     finally:
         await storage.close()
+
+
+async def test_reminder_settings_and_deliveries(storage: Storage) -> None:
+    group = await storage.create_group(owner_chat_id=1)
+
+    settings = await storage.save_reminder_settings(
+        chat_id=1,
+        group_id=group.id,
+        mode="day_before",
+        time="20:00",
+        shift_types=("day", "night"),
+        enabled=True,
+    )
+    assert settings.mode == "day_before"
+    assert settings.shift_types == ("day", "night")
+    assert settings.enabled is True
+    assert await storage.get_reminder_settings(1) == settings
+    assert await storage.list_enabled_reminder_settings() == [settings]
+
+    await storage.set_reminder_enabled(1, False)
+    assert await storage.list_enabled_reminder_settings() == []
+    await storage.set_reminder_enabled(1, True)
+
+    due = datetime(2026, 11, 11, 20, 0, tzinfo=timezone.utc)
+    delivery = await storage.create_reminder_delivery(
+        chat_id=1,
+        group_id=group.id,
+        employee_position=0,
+        shift_date=date(2026, 11, 12),
+        shift_type="day",
+        mode="day_before",
+        due_at=due,
+    )
+    assert delivery.due_at == due
+    assert delivery.sent_count == 0
+    assert delivery.acked_at is None
+
+    same = await storage.create_reminder_delivery(
+        chat_id=1,
+        group_id=group.id,
+        employee_position=0,
+        shift_date=date(2026, 11, 12),
+        shift_type="day",
+        mode="day_before",
+        due_at=due,
+    )
+    assert same.id == delivery.id
+
+    sent_at = datetime(2026, 11, 11, 20, 1, tzinfo=timezone.utc)
+    assert await storage.touch_reminder_delivery(delivery.id, sent_at)
+    delivery = await storage.get_reminder_delivery_by_id(delivery.id)
+    assert delivery is not None
+    assert delivery.sent_count == 1
+    assert delivery.last_sent_at == sent_at
+
+    assert await storage.ack_reminder_delivery(delivery.id, 1)
+    assert not await storage.ack_reminder_delivery(delivery.id, 1)
+    delivery = await storage.get_reminder_delivery_by_id(delivery.id)
+    assert delivery is not None
+    assert delivery.acked_at is not None
+
+    pending = await storage.create_reminder_delivery(
+        chat_id=1,
+        group_id=group.id,
+        employee_position=0,
+        shift_date=date(2026, 11, 13),
+        shift_type="day",
+        mode="day_before",
+        due_at=due,
+    )
+    assert await storage.cancel_pending_reminders(1) == 1
+    assert await storage.get_reminder_delivery_by_id(pending.id) is None
+    # Подтверждённая доставка не удаляется.
+    assert await storage.get_reminder_delivery_by_id(delivery.id) is not None

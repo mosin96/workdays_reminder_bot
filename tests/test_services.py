@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timezone
 
 import pytest
 
 from bot.services import (
     QueryError,
     employees_on_shift,
+    format_time,
     next_shift,
     parse_date_query,
     parse_month_query,
+    parse_time_query,
+    reminder_due_at,
+    shift_end_datetime,
 )
 from bot.models import DayInfo, Employee, Schedule, Shift
 
@@ -107,3 +111,53 @@ def test_next_shift_sequence() -> None:
     assert next_shift(day, "night") == (date(2026, 12, 1), "day")
     assert next_shift(day, "off") is None
     assert next_shift(day, "vacation") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("20:00", time(20, 0)),
+        ("8", time(8, 0)),
+        ("8:5", time(8, 5)),
+        ("08.30", time(8, 30)),
+        ("20-00", time(20, 0)),
+        ("0:00", time(0, 0)),
+        ("23:59", time(23, 59)),
+    ],
+)
+def test_parse_time(text: str, expected: time) -> None:
+    assert parse_time_query(text) == expected
+    parsed = parse_time_query(text)
+    assert format_time(parsed) == f"{expected.hour:02d}:{expected.minute:02d}"
+
+
+@pytest.mark.parametrize("text", ["", "24:00", "12:60", "-1:00", "вечер"])
+def test_parse_time_errors(text: str) -> None:
+    with pytest.raises(QueryError):
+        parse_time_query(text)
+
+
+def test_reminder_due_at() -> None:
+    tz = timezone.utc
+    day = date(2026, 11, 12)
+
+    assert reminder_due_at(day, "day", "day_before", "20:00", tz) == datetime(
+        2026, 11, 11, 20, 0, tzinfo=tz
+    )
+    assert reminder_due_at(day, "day", "same_day", "08:30", tz) == datetime(
+        2026, 11, 12, 8, 30, tzinfo=tz
+    )
+    assert reminder_due_at(day, "day", "end_of_shift", "20:00", tz) == datetime(
+        2026, 11, 12, 20, 0, tzinfo=tz
+    )
+    assert reminder_due_at(
+        day, "short_day", "end_of_shift", "20:00", tz
+    ) == datetime(2026, 11, 12, 16, 0, tzinfo=tz)
+    assert reminder_due_at(
+        day, "night", "end_of_shift", "20:00", tz
+    ) == datetime(2026, 11, 13, 8, 0, tzinfo=tz)
+
+    assert shift_end_datetime(day, "night", tz) == datetime(
+        2026, 11, 13, 8, 0, tzinfo=tz
+    )
+    assert reminder_due_at(day, "vacation", "end_of_shift", "20:00", tz) is None

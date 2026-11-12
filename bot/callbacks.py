@@ -42,3 +42,12 @@ class DeleteWorkspaceCB(CallbackData, prefix="delws"):
 
 class ResetCB(CallbackData, prefix="reset"):
     action: str
+
+
+class ReminderCB(CallbackData, prefix="rm"):
+    action: str
+    value: str = ""
+
+
+class ReminderAckCB(CallbackData, prefix="rma"):
+    id: int

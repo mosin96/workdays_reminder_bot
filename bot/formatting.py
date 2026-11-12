@@ -5,9 +5,14 @@ from __future__ import annotations
 import html
 from datetime import date
 
-from .models import Employee, Schedule, Shift
+from .models import Employee, ReminderSettings, Schedule, Shift
 from .ocr.pipeline import OcrResult
-from .services import employees_on_shift, employees_on_shift_types, next_shift
+from .services import (
+    REMINDER_MODE_TITLES,
+    employees_on_shift,
+    employees_on_shift_types,
+    next_shift,
+)
 from .utils import (
     days_in_month,
     format_date_ru,
@@ -389,6 +394,81 @@ def no_schedule_text(year: int, month: int, latest: Schedule | None) -> str:
     return "\n".join(lines)
 
 
+def reminders_menu_text(
+    settings: ReminderSettings, employee_name: str | None
+) -> str:
+    mode_title = REMINDER_MODE_TITLES.get(settings.mode, settings.mode)
+    if settings.mode == "end_of_shift":
+        time_line = (
+            "⏰ Время: автоматически ("
+            "Д — 20:00, Н — 08:00 следующего дня, ДД — 16:00)"
+        )
+    else:
+        time_line = f"⏰ Время: {settings.time}"
+    type_titles = {
+        "day": "🟩 Д",
+        "night": "🟦 Н",
+        "short_day": "🟪 ДД",
+    }
+    types = ", ".join(
+        f"{label} ✅" if shift_type in settings.shift_types else f"{label} ▫️"
+        for shift_type, label in type_titles.items()
+    )
+    lines = [
+        "🔔 <b>Напоминания о сменах</b>",
+        "",
+        f"👤 Сотрудник: <b>{html.escape(employee_name or 'не выбран')}</b>",
+        f"📅 Когда: {mode_title}",
+        time_line,
+        f"🗓 Типы смен: {types}",
+        f"📣 Статус: {'включены' if settings.enabled else 'выключены'}",
+        "",
+        "Напоминание придёт с кнопкой подтверждения. Если не нажать её, "
+        "бот повторит сообщение через 30 минут.",
+    ]
+    if not employee_name:
+        lines.extend(
+            [
+                "",
+                "⚠️ Сначала выберите сотрудника командой /employee.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def reminder_message_text(
+    employee: Employee,
+    shift_day: date,
+    shift: Shift,
+    mode: str,
+    today: date | None = None,
+) -> str:
+    titles = {
+        "day_before": "🔔 <b>Напоминание: завтра смена</b>",
+        "same_day": "🔔 <b>Напоминание: сегодня смена</b>",
+        "end_of_shift": "🔔 <b>Смена завершена</b>",
+    }
+    title = titles.get(mode, "🔔 <b>Напоминание о смене</b>")
+    note = ""
+    if mode == "day_before":
+        if today is not None and today >= shift_day:
+            title = "🔔 <b>Напоминание: сегодня смена</b>"
+        else:
+            note = "Завтра у вас смена — не забудьте."
+    elif mode == "end_of_shift":
+        note = "Смена закончилась."
+    lines = [
+        title,
+        "",
+        f"👤 {html.escape(employee.name or 'без имени')}",
+        f"📅 {format_date_ru(shift_day)}, {weekday_name(shift_day)}",
+        _shift_description(shift),
+    ]
+    if note:
+        lines.extend(["", note])
+    return "\n".join(lines)
+
+
 def help_text() -> str:
     return (
         "🤖 <b>Бот расписания смен</b>\n\n"
@@ -400,7 +480,8 @@ def help_text() -> str:
         "/unsubscribe — отписаться от общего расписания\n"
         "После 10 неудачных вводов кода чат блокируется.\n\n"
         "<b>Сброс</b>\n"
-        "/reset — меню: сотрудник, ввод, подписка, удаление месяца/расписания\n\n"
+        "/reset — меню: сотрудник, ввод, напоминания, подписка, "
+        "удаление месяца/расписания\n\n"
         "<b>Просмотр</b>\n"
         "/today — смена сегодня, коллеги и передача смены\n"
         "/date 15 — 15-е число текущего месяца\n"
@@ -411,7 +492,8 @@ def help_text() -> str:
         "/months — загруженные месяцы\n"
         "/employee — сменить сотрудника\n\n"
         "<b>Только создатель</b>\n"
-        "загрузка картинок, /edit, /delete, /delete_workspace\n\n"
+        "загрузка картинок, /edit, /delete, /delete_workspace\n"
+        "/reminders — напоминания о сменах (режим, время, типы смен)\n\n"
         "/cancel — отменить ввод или распознавание\n\n"
         f"Обозначения: {LEGEND}\n\n"
         "Коды: Д/Н — 12ч, ДД — 8ч, НМ — ночь в начале/конце месяца, "

@@ -15,6 +15,8 @@ from .models import (
     ChatSubscription,
     DayInfo,
     Employee,
+    ReminderDelivery,
+    ReminderSettings,
     Schedule,
     ScheduleGroup,
     Shift,
@@ -99,7 +101,39 @@ CREATE TABLE IF NOT EXISTS chat_blocks (
     updated_at TEXT NOT NULL
 );
 
-PRAGMA user_version = 2;
+CREATE TABLE IF NOT EXISTS reminder_settings (
+    chat_id INTEGER PRIMARY KEY,
+    group_id INTEGER NOT NULL REFERENCES schedule_groups(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL DEFAULT 'day_before',
+    time TEXT NOT NULL DEFAULT '20:00',
+    shift_types TEXT NOT NULL DEFAULT 'day,night,short_day',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminder_settings_group
+    ON reminder_settings(group_id);
+
+CREATE TABLE IF NOT EXISTS reminder_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL REFERENCES schedule_groups(id) ON DELETE CASCADE,
+    employee_position INTEGER NOT NULL,
+    shift_date TEXT NOT NULL,
+    shift_type TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    last_sent_at TEXT,
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    acked_at TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(chat_id, shift_date, mode)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminder_deliveries_pending
+    ON reminder_deliveries(chat_id, acked_at);
+
+PRAGMA user_version = 3;
 """
 
 
@@ -409,6 +443,204 @@ class Storage:
             )
             await self.db.commit()
             return bool(cursor.rowcount)
+
+    # ------------------------------------------------------------------
+    # Напоминания
+    # ------------------------------------------------------------------
+
+    async def get_reminder_settings(
+        self, chat_id: int
+    ) -> ReminderSettings | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM reminder_settings WHERE chat_id = ?", (chat_id,)
+        )
+        row = await cursor.fetchone()
+        return self._reminder_settings_from_row(row) if row else None
+
+    async def list_enabled_reminder_settings(self) -> list[ReminderSettings]:
+        cursor = await self.db.execute(
+            "SELECT * FROM reminder_settings WHERE enabled = 1"
+        )
+        rows = await cursor.fetchall()
+        return [self._reminder_settings_from_row(row) for row in rows]
+
+    @staticmethod
+    def _reminder_settings_from_row(row: aiosqlite.Row) -> ReminderSettings:
+        types = tuple(
+            value
+            for value in str(row["shift_types"] or "").split(",")
+            if value
+        )
+        return ReminderSettings(
+            chat_id=int(row["chat_id"]),
+            group_id=int(row["group_id"]),
+            mode=str(row["mode"]),
+            time=str(row["time"]),
+            shift_types=types,
+            enabled=bool(row["enabled"]),
+        )
+
+    async def save_reminder_settings(
+        self,
+        chat_id: int,
+        group_id: int,
+        mode: str,
+        time: str,
+        shift_types: tuple[str, ...],
+        enabled: bool,
+    ) -> ReminderSettings:
+        async with self._lock:
+            await self.db.execute(
+                "INSERT INTO reminder_settings "
+                "(chat_id, group_id, mode, time, shift_types, enabled, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET "
+                "group_id = excluded.group_id, "
+                "mode = excluded.mode, "
+                "time = excluded.time, "
+                "shift_types = excluded.shift_types, "
+                "enabled = excluded.enabled, "
+                "updated_at = excluded.updated_at",
+                (
+                    chat_id,
+                    group_id,
+                    mode,
+                    time,
+                    ",".join(shift_types),
+                    int(enabled),
+                    _now(),
+                ),
+            )
+            await self.db.commit()
+        settings = await self.get_reminder_settings(chat_id)
+        if settings is None:  # pragma: no cover - защита от сбоя SQLite
+            raise RuntimeError("Не удалось сохранить настройки напоминаний")
+        return settings
+
+    async def set_reminder_enabled(self, chat_id: int, enabled: bool) -> None:
+        async with self._lock:
+            await self.db.execute(
+                "UPDATE reminder_settings SET enabled = ?, updated_at = ? "
+                "WHERE chat_id = ?",
+                (int(enabled), _now(), chat_id),
+            )
+            await self.db.commit()
+
+    async def get_reminder_delivery(
+        self, chat_id: int, shift_date: date, mode: str
+    ) -> ReminderDelivery | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM reminder_deliveries "
+            "WHERE chat_id = ? AND shift_date = ? AND mode = ?",
+            (chat_id, shift_date.isoformat(), mode),
+        )
+        row = await cursor.fetchone()
+        return self._reminder_delivery_from_row(row) if row else None
+
+    async def get_reminder_delivery_by_id(
+        self, delivery_id: int
+    ) -> ReminderDelivery | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM reminder_deliveries WHERE id = ?", (delivery_id,)
+        )
+        row = await cursor.fetchone()
+        return self._reminder_delivery_from_row(row) if row else None
+
+    async def create_reminder_delivery(
+        self,
+        chat_id: int,
+        group_id: int,
+        employee_position: int,
+        shift_date: date,
+        shift_type: str,
+        mode: str,
+        due_at: datetime,
+    ) -> ReminderDelivery:
+        async with self._lock:
+            await self.db.execute(
+                "INSERT OR IGNORE INTO reminder_deliveries "
+                "(chat_id, group_id, employee_position, shift_date, shift_type, "
+                "mode, due_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    chat_id,
+                    group_id,
+                    employee_position,
+                    shift_date.isoformat(),
+                    shift_type,
+                    mode,
+                    due_at.isoformat(timespec="seconds"),
+                    _now(),
+                ),
+            )
+            await self.db.commit()
+        delivery = await self.get_reminder_delivery(chat_id, shift_date, mode)
+        if delivery is None:  # pragma: no cover - защита от сбоя SQLite
+            raise RuntimeError("Не удалось создать напоминание")
+        return delivery
+
+    async def touch_reminder_delivery(
+        self, delivery_id: int, sent_at: datetime
+    ) -> bool:
+        async with self._lock:
+            cursor = await self.db.execute(
+                "UPDATE reminder_deliveries SET last_sent_at = ?, "
+                "sent_count = sent_count + 1 "
+                "WHERE id = ? AND acked_at IS NULL",
+                (sent_at.isoformat(timespec="seconds"), delivery_id),
+            )
+            await self.db.commit()
+            return bool(cursor.rowcount)
+
+    async def ack_reminder_delivery(
+        self, delivery_id: int, chat_id: int
+    ) -> bool:
+        async with self._lock:
+            cursor = await self.db.execute(
+                "UPDATE reminder_deliveries SET acked_at = ? "
+                "WHERE id = ? AND chat_id = ? AND acked_at IS NULL",
+                (_now(), delivery_id, chat_id),
+            )
+            await self.db.commit()
+            return bool(cursor.rowcount)
+
+    async def cancel_pending_reminders(self, chat_id: int) -> int:
+        async with self._lock:
+            cursor = await self.db.execute(
+                "DELETE FROM reminder_deliveries "
+                "WHERE chat_id = ? AND acked_at IS NULL",
+                (chat_id,),
+            )
+            await self.db.commit()
+            return int(cursor.rowcount)
+
+    @staticmethod
+    def _reminder_delivery_from_row(
+        row: aiosqlite.Row,
+    ) -> ReminderDelivery:
+        def parse(value: str | None) -> datetime | None:
+            if not value:
+                return None
+            try:
+                return datetime.fromisoformat(str(value))
+            except ValueError:
+                return None
+
+        due_at = parse(row["due_at"]) or datetime.min.replace(
+            tzinfo=timezone.utc
+        )
+        return ReminderDelivery(
+            id=int(row["id"]),
+            chat_id=int(row["chat_id"]),
+            group_id=int(row["group_id"]),
+            employee_position=int(row["employee_position"]),
+            shift_date=date.fromisoformat(str(row["shift_date"])),
+            shift_type=str(row["shift_type"]),
+            mode=str(row["mode"]),
+            due_at=due_at,
+            last_sent_at=parse(row["last_sent_at"]),
+            sent_count=int(row["sent_count"]),
+            acked_at=parse(row["acked_at"]),
+        )
 
     # ------------------------------------------------------------------
     # Расписания

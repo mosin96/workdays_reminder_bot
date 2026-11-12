@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 
 @dataclass
@@ -62,3 +63,28 @@ class Schedule:
 
     def shift(self, position: int, day: int) -> Shift | None:
         return self.shifts.get((position, day))
+
+
+@dataclass
+class ReminderSettings:
+    chat_id: int
+    group_id: int
+    mode: str
+    time: str
+    shift_types: tuple[str, ...]
+    enabled: bool = False
+
+
+@dataclass
+class ReminderDelivery:
+    id: int
+    chat_id: int
+    group_id: int
+    employee_position: int
+    shift_date: date
+    shift_type: str
+    mode: str
+    due_at: datetime
+    last_sent_at: datetime | None = None
+    sent_count: int = 0
+    acked_at: datetime | None = None

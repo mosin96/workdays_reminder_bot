@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .models import Employee, Schedule
 from .utils import (
@@ -197,3 +198,79 @@ def next_shift(day: date, shift_type: str) -> tuple[date, str] | None:
 
 def month_of(day: date) -> tuple[int, int]:
     return day.year, day.month
+
+
+# ---------------------------------------------------------------------------
+# Напоминания
+# ---------------------------------------------------------------------------
+
+REMINDER_MODES = ("day_before", "same_day", "end_of_shift")
+REMINDER_MODE_TITLES = {
+    "day_before": "за день до смены",
+    "same_day": "в день смены",
+    "end_of_shift": "в конце смены",
+}
+
+WORKING_SHIFT_TYPES = ("day", "night", "short_day")
+
+SHIFT_END_TIMES = {
+    "day": time(20, 0),
+    "short_day": time(16, 0),
+    "night": time(8, 0),
+}
+
+
+def parse_time_query(text: str) -> time:
+    """Разбирает время в формате ЧЧ:ММ (также 8, 8:5, 08.30)."""
+
+    value = (text or "").strip()
+    match = re.fullmatch(r"(\d{1,2})(?:[:.\-](\d{1,2}))?", value)
+    if not match:
+        raise QueryError("Не понял время. Пример: 20:00 или 8:30.")
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    if not 0 <= hour <= 23:
+        raise QueryError("Часы должны быть от 0 до 23.")
+    if not 0 <= minute <= 59:
+        raise QueryError("Минуты должны быть от 0 до 59.")
+    return time(hour, minute)
+
+
+def format_time(value: time) -> str:
+    return f"{value.hour:02d}:{value.minute:02d}"
+
+
+def resolve_timezone(name: str) -> ZoneInfo | None:
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def shift_end_datetime(
+    day: date, shift_type: str, tz: ZoneInfo
+) -> datetime | None:
+    end = SHIFT_END_TIMES.get(shift_type)
+    if end is None:
+        return None
+    end_day = day + timedelta(days=1) if shift_type == "night" else day
+    return datetime.combine(end_day, end, tzinfo=tz)
+
+
+def reminder_due_at(
+    shift_day: date,
+    shift_type: str,
+    mode: str,
+    reminder_time: str,
+    tz: ZoneInfo,
+) -> datetime | None:
+    """Когда отправить напоминание о конкретной смене."""
+
+    if mode == "end_of_shift":
+        return shift_end_datetime(shift_day, shift_type, tz)
+    try:
+        parsed = parse_time_query(reminder_time)
+    except QueryError:
+        return None
+    target_day = shift_day - timedelta(days=1) if mode == "day_before" else shift_day
+    return datetime.combine(target_day, parsed, tzinfo=tz)

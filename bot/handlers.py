@@ -24,6 +24,8 @@ from .callbacks import (
     DeleteWorkspaceCB,
     EmployeeCB,
     RememberCB,
+    ReminderAckCB,
+    ReminderCB,
     ResetCB,
     StartCB,
     SwitchCB,
@@ -39,6 +41,7 @@ from .formatting import (
     month_list_text,
     no_schedule_text,
     remember_text,
+    reminders_menu_text,
     schedule_summary_text,
     summary_text,
     today_report_text,
@@ -56,6 +59,8 @@ from .keyboards import (
     edit_schedule_keyboard,
     employees_keyboard,
     remember_keyboard,
+    reminder_time_keyboard,
+    reminders_keyboard,
     reset_confirm_keyboard,
     reset_done_keyboard,
     reset_keyboard,
@@ -64,7 +69,13 @@ from .keyboards import (
     summary_keyboard,
     switch_keyboard,
 )
-from .models import ChatSubscription, Employee, Schedule, ScheduleGroup
+from .models import (
+    ChatSubscription,
+    Employee,
+    ReminderSettings,
+    Schedule,
+    ScheduleGroup,
+)
 from .ocr import (
     OcrCancelled,
     OcrError,
@@ -73,11 +84,15 @@ from .ocr import (
 )
 from .processing import ProcessingRegistry
 from .services import (
+    REMINDER_MODES,
+    WORKING_SHIFT_TYPES,
     QueryError,
     find_employee,
+    format_time,
     next_shift,
     parse_date_query,
     parse_month_query,
+    parse_time_query,
 )
 from .storage import Storage
 from .utils import format_month_ru
@@ -99,6 +114,7 @@ class Form(StatesGroup):
     rename = State()
     custom_year = State()
     waiting_code = State()
+    reminder_time = State()
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +384,7 @@ async def _show_subscription_info(
     )
     if group.owner_chat_id == message.chat.id:
         lines.append("/edit — изменить смены")
+        lines.append("/reminders — напоминания о сменах")
         lines.append("/delete_workspace — удалить расписание")
     else:
         lines.append("/unsubscribe — отписаться")
@@ -375,6 +392,36 @@ async def _show_subscription_info(
 
     if latest is not None and employee is None:
         await _send_employee_picker(message, storage, latest)
+
+
+async def _ensure_reminder_settings(
+    storage: Storage, chat_id: int, group_id: int
+) -> ReminderSettings:
+    settings = await storage.get_reminder_settings(chat_id)
+    if settings is None or settings.group_id != group_id:
+        settings = await storage.save_reminder_settings(
+            chat_id,
+            group_id,
+            mode="day_before",
+            time="20:00",
+            shift_types=WORKING_SHIFT_TYPES,
+            enabled=False,
+        )
+    return settings
+
+
+async def _render_reminders_menu(
+    callback: CallbackQuery,
+    storage: Storage,
+    settings: ReminderSettings,
+) -> None:
+    subscription = await storage.get_subscription(settings.chat_id)
+    employee_name = subscription.employee_name if subscription else None
+    await _safe_edit(
+        callback,
+        reminders_menu_text(settings, employee_name),
+        reply_markup=reminders_keyboard(settings),
+    )
 
 
 async def _show_day(
@@ -758,8 +805,22 @@ async def on_reset_action(
 
     today = _today(config)
 
+    if action == "reminders":
+        if not is_owner:
+            await callback.answer(
+                "Настраивать напоминания может только создатель.",
+                show_alert=True,
+            )
+            return
+        settings = await _ensure_reminder_settings(storage, chat_id, group.id)
+        await callback.answer()
+        await _render_reminders_menu(callback, storage, settings)
+        return
+
     if action == "employee":
         await storage.clear_employee(chat_id)
+        await storage.set_reminder_enabled(chat_id, False)
+        await storage.cancel_pending_reminders(chat_id)
         await callback.answer("Готово")
         await _safe_edit(
             callback,
@@ -1266,6 +1327,247 @@ async def on_forget(
         callback,
         "🗣 Хорошо, при следующей загрузке расписания спрошу сотрудника снова.",
     )
+
+
+@router.message(Command("reminders"))
+async def cmd_reminders(message: Message, storage: Storage) -> None:
+    context = await _group_for_chat(storage, message.chat.id)
+    if context is None:
+        await _start_prompt(message)
+        return
+    _, group = context
+    if group.owner_chat_id != message.chat.id:
+        await message.answer(
+            "⛔ Настраивать напоминания может только создатель расписания."
+        )
+        return
+    settings = await _ensure_reminder_settings(
+        storage, message.chat.id, group.id
+    )
+    subscription = await storage.get_subscription(message.chat.id)
+    employee_name = subscription.employee_name if subscription else None
+    await message.answer(
+        reminders_menu_text(settings, employee_name),
+        reply_markup=reminders_keyboard(settings),
+    )
+
+
+@router.callback_query(ReminderCB.filter())
+async def on_reminder_action(
+    callback: CallbackQuery,
+    callback_data: ReminderCB,
+    state: FSMContext,
+    storage: Storage,
+    config: Config,
+) -> None:
+    if callback.message is None:
+        return
+    chat_id = callback.message.chat.id
+    context = await _group_for_chat(storage, chat_id)
+    if context is None:
+        await callback.answer(
+            "Сначала подпишитесь на расписание: /start", show_alert=True
+        )
+        return
+    _, group = context
+    if group.owner_chat_id != chat_id:
+        await callback.answer(
+            "Настраивать напоминания может только создатель.",
+            show_alert=True,
+        )
+        return
+
+    settings = await _ensure_reminder_settings(storage, chat_id, group.id)
+    action = callback_data.action
+
+    async def save(**changes) -> ReminderSettings:
+        return await storage.save_reminder_settings(
+            settings.chat_id,
+            settings.group_id,
+            mode=changes.get("mode", settings.mode),
+            time=changes.get("time", settings.time),
+            shift_types=changes.get("shift_types", settings.shift_types),
+            enabled=changes.get("enabled", settings.enabled),
+        )
+
+    if action == "mode":
+        if callback_data.value not in REMINDER_MODES:
+            await callback.answer("Неизвестный режим", show_alert=True)
+            return
+        settings = await save(mode=callback_data.value)
+        await callback.answer("Сохранено")
+        await _render_reminders_menu(callback, storage, settings)
+        return
+
+    if action == "time":
+        if settings.mode == "end_of_shift":
+            await callback.answer(
+                "В этом режиме время определяется по типу смены: "
+                "Д — 20:00, Н — 08:00, ДД — 16:00.",
+                show_alert=True,
+            )
+            return
+        await callback.answer()
+        await _safe_edit(
+            callback,
+            "⏰ Выберите время напоминания:",
+            reply_markup=reminder_time_keyboard(settings.time),
+        )
+        return
+
+    if action == "settime":
+        try:
+            value = format_time(parse_time_query(callback_data.value))
+        except QueryError as exc:
+            await callback.answer(str(exc), show_alert=True)
+            return
+        settings = await save(time=value)
+        await callback.answer("Сохранено")
+        await _render_reminders_menu(callback, storage, settings)
+        return
+
+    if action == "custom_time":
+        await state.set_state(Form.reminder_time)
+        await state.set_data({"group_id": group.id})
+        await callback.answer()
+        await callback.message.answer(
+            "Введите время напоминания в формате <code>ЧЧ:ММ</code>, "
+            "например <code>20:00</code>.\n/cancel — отмена."
+        )
+        return
+
+    if action == "type":
+        shift_type = callback_data.value
+        if shift_type not in WORKING_SHIFT_TYPES:
+            await callback.answer("Неизвестный тип смены", show_alert=True)
+            return
+        current = set(settings.shift_types)
+        if shift_type in current:
+            if len(current) == 1:
+                await callback.answer(
+                    "Оставьте включённым хотя бы один тип смены.",
+                    show_alert=True,
+                )
+                return
+            current.remove(shift_type)
+        else:
+            current.add(shift_type)
+        ordered = tuple(
+            item for item in WORKING_SHIFT_TYPES if item in current
+        )
+        settings = await save(shift_types=ordered)
+        await callback.answer("Сохранено")
+        await _render_reminders_menu(callback, storage, settings)
+        return
+
+    if action == "toggle":
+        enabling = not settings.enabled
+        if enabling:
+            subscription = await storage.get_subscription(chat_id)
+            if subscription is None or not subscription.employee_name:
+                await callback.answer(
+                    "Сначала выберите сотрудника командой /employee.",
+                    show_alert=True,
+                )
+                return
+        settings = await save(enabled=enabling)
+        if not enabling:
+            await storage.cancel_pending_reminders(chat_id)
+        await callback.answer(
+            "Напоминания включены" if enabling else "Напоминания выключены"
+        )
+        await _render_reminders_menu(callback, storage, settings)
+        return
+
+    if action == "menu":
+        await callback.answer()
+        await _render_reminders_menu(callback, storage, settings)
+        return
+
+    if action == "back":
+        await callback.answer()
+        await _show_reset_menu(callback, storage, config)
+        return
+
+    await callback.answer()
+
+
+@router.message(Form.reminder_time, F.text)
+async def on_reminder_time_text(
+    message: Message, state: FSMContext, storage: Storage
+) -> None:
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        await state.clear()
+        await message.answer("Ввод времени отменён.")
+        return
+    try:
+        value = format_time(parse_time_query(text))
+    except QueryError as exc:
+        await message.answer(f"⚠️ {html.escape(str(exc))}")
+        return
+    data = await state.get_data()
+    await state.clear()
+    group_id = int(data.get("group_id", 0))
+    if not await _is_owner(storage, message.chat.id, group_id):
+        await message.answer("Настраивать напоминания может только создатель.")
+        return
+    settings = await storage.get_reminder_settings(message.chat.id)
+    if settings is None or settings.group_id != group_id:
+        await message.answer("Настройки напоминаний не найдены. Откройте /reminders.")
+        return
+    settings = await storage.save_reminder_settings(
+        settings.chat_id,
+        settings.group_id,
+        mode=settings.mode,
+        time=value,
+        shift_types=settings.shift_types,
+        enabled=settings.enabled,
+    )
+    subscription = await storage.get_subscription(message.chat.id)
+    employee_name = subscription.employee_name if subscription else None
+    await message.answer(f"✅ Время напоминания: <b>{value}</b>")
+    await message.answer(
+        reminders_menu_text(settings, employee_name),
+        reply_markup=reminders_keyboard(settings),
+    )
+
+
+@router.callback_query(ReminderAckCB.filter())
+async def on_reminder_ack(
+    callback: CallbackQuery,
+    callback_data: ReminderAckCB,
+    storage: Storage,
+) -> None:
+    if callback.message is None:
+        return
+    chat_id = callback.message.chat.id
+    delivery = await storage.get_reminder_delivery_by_id(callback_data.id)
+    if delivery is None or delivery.chat_id != chat_id:
+        await callback.answer("Напоминание устарело.", show_alert=True)
+        return
+    if delivery.acked_at is not None:
+        await callback.answer("Это напоминание уже подтверждено.")
+        return
+    await storage.ack_reminder_delivery(delivery.id, chat_id)
+    await callback.answer("✅ Напоминание получено")
+    text = (
+        getattr(callback.message, "html_text", None)
+        or callback.message.text
+        or ""
+    )
+    if text:
+        try:
+            await callback.message.edit_text(
+                text + "\n\n✅ <b>Напоминание получено.</b>"
+            )
+            return
+        except TelegramBadRequest:
+            pass
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
 
 
 # ---------------------------------------------------------------------------

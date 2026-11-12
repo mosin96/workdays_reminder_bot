@@ -10,12 +10,14 @@ from .callbacks import (
     DeleteWorkspaceCB,
     EmployeeCB,
     RememberCB,
+    ReminderAckCB,
+    ReminderCB,
     ResetCB,
     StartCB,
     SwitchCB,
     UploadCB,
 )
-from .models import Employee, Schedule
+from .models import Employee, ReminderSettings, Schedule
 from .utils import (
     MONTHS_NOMINATIVE,
     days_in_month,
@@ -199,6 +201,14 @@ def reset_keyboard(
             ]
         )
     if has_subscription and is_owner:
+        rows.append(
+            [
+                _button(
+                    "🔔 Напоминания",
+                    ResetCB(action="reminders"),
+                )
+            ]
+        )
         if has_month:
             rows.append(
                 [
@@ -238,6 +248,125 @@ def reset_done_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_button("🧹 Ещё сбросить", ResetCB(action="menu"))]
+        ]
+    )
+
+
+REMINDER_MODE_LABELS = {
+    "day_before": "За день до смены",
+    "same_day": "В день смены",
+    "end_of_shift": "В конце смены",
+}
+
+REMINDER_TYPE_LABELS = {
+    "day": "🟩 Д",
+    "night": "🟦 Н",
+    "short_day": "🟪 ДД",
+}
+
+
+def reminders_keyboard(settings: ReminderSettings) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for mode, label in REMINDER_MODE_LABELS.items():
+        mark = "✅ " if settings.mode == mode else ""
+        rows.append(
+            [
+                _button(
+                    f"{mark}{label}",
+                    ReminderCB(action="mode", value=mode),
+                )
+            ]
+        )
+    time_label = (
+        "⏰ Время: автоматически"
+        if settings.mode == "end_of_shift"
+        else f"⏰ Время: {settings.time}"
+    )
+    rows.append(
+        [
+            _button(
+                time_label,
+                ReminderCB(action="time"),
+            )
+        ]
+    )
+    type_row: list[InlineKeyboardButton] = []
+    for shift_type, label in REMINDER_TYPE_LABELS.items():
+        mark = "✅ " if shift_type in settings.shift_types else "▫️ "
+        type_row.append(
+            _button(
+                f"{mark}{label}",
+                ReminderCB(action="type", value=shift_type),
+            )
+        )
+    rows.append(type_row)
+    rows.append(
+        [
+            _button(
+                "🔕 Выключить" if settings.enabled else "🔔 Включить",
+                ReminderCB(action="toggle"),
+            )
+        ]
+    )
+    rows.append(
+        [
+            _button(
+                "⬅️ Назад",
+                ReminderCB(action="back"),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reminder_time_keyboard(current: str) -> InlineKeyboardMarkup:
+    presets = ["08:00", "12:00", "18:00", "20:00", "21:00"]
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for preset in presets:
+        mark = "✅ " if preset == current else ""
+        row.append(
+            _button(
+                f"{mark}{preset}",
+                ReminderCB(
+                    action="settime",
+                    value=preset.replace(":", "-"),
+                ),
+            )
+        )
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            _button(
+                "⌨️ Своё время",
+                ReminderCB(action="custom_time"),
+            )
+        ]
+    )
+    rows.append(
+        [
+            _button(
+                "⬅️ Назад",
+                ReminderCB(action="menu"),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reminder_ack_keyboard(delivery_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "✅ Напоминание получено",
+                    ReminderAckCB(id=delivery_id),
+                )
+            ]
         ]
     )
 
