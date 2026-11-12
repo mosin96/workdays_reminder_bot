@@ -12,6 +12,7 @@ from bot import handlers as h
 from bot.callbacks import (
     DeleteWorkspaceCB,
     EmployeeCB,
+    MenuCB,
     RememberCB,
     ReminderAckCB,
     ReminderCB,
@@ -669,7 +670,7 @@ async def test_reminders_command_and_settings(storage: Storage) -> None:
     assert "Напоминания о сменах" in owner.last_text
     settings = await storage.get_reminder_settings(555)
     assert settings is not None
-    assert settings.mode == "day_before"
+    assert settings.modes == ("day_before", "shift_start", "shift_end")
     assert settings.enabled is False
 
     await storage.subscribe(777, group.id)
@@ -683,14 +684,15 @@ async def test_reminders_command_and_settings(storage: Storage) -> None:
 
     await h.on_reminder_action(
         callback,
-        ReminderCB(action="mode", value="same_day"),
+        ReminderCB(action="mode", value="shift_start"),
         state,
         storage,
         config,
     )
     settings = await storage.get_reminder_settings(555)
     assert settings is not None
-    assert settings.mode == "same_day"
+    assert "shift_start" not in settings.modes
+    assert settings.modes == ("day_before", "shift_end")
 
     await h.on_reminder_action(
         callback,
@@ -742,7 +744,7 @@ async def test_reminder_custom_time_and_ack(storage: Storage) -> None:
     await storage.save_reminder_settings(
         chat_id=555,
         group_id=group.id,
-        mode="same_day",
+        modes=("day_before",),
         time="20:00",
         shift_types=("day",),
         enabled=True,
@@ -770,7 +772,7 @@ async def test_reminder_custom_time_and_ack(storage: Storage) -> None:
         employee_position=1,
         shift_date=date(2026, 11, 12),
         shift_type="day",
-        mode="same_day",
+        mode="day_before",
         due_at=datetime(2026, 11, 12, 9, 5, tzinfo=timezone.utc),
     )
     callback = FakeCallback()
@@ -782,3 +784,77 @@ async def test_reminder_custom_time_and_ack(storage: Storage) -> None:
     assert delivery is not None
     assert delivery.acked_at is not None
     assert "Напоминание получено" in callback.message.last_text
+
+
+async def test_first_schedule_offers_reminders_once(storage: Storage) -> None:
+    group, schedule_id = await _draft(storage)
+    callback = FakeCallback()
+
+    await h.on_confirm(
+        callback, UploadCB(action="confirm", sid=schedule_id), storage
+    )
+    texts = "\n".join(text for text, _ in callback.message.sent)
+    assert "Настроить напоминания о сменах" in texts
+    settings = await storage.get_reminder_settings(555)
+    assert settings is not None
+    assert settings.modes == ("day_before", "shift_start", "shift_end")
+
+    second = FakeCallback()
+    await h.on_confirm(
+        second, UploadCB(action="confirm", sid=schedule_id), storage
+    )
+    texts = "\n".join(text for text, _ in second.message.sent)
+    assert "Настроить напоминания о сменах" not in texts
+
+
+async def test_main_menu_actions(storage: Storage) -> None:
+    group, schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, group.id)
+    await storage.set_employee(555, "Петров Пётр")
+    config = Config(bot_token="test", db_path=storage.path)
+
+    message = FakeMessage()
+    await h.cmd_menu(message, storage)
+    assert "Главное меню" in message.last_text
+    keyboard = message.sent[-1][1]
+    labels = [
+        button.text for row in keyboard.inline_keyboard for button in row
+    ]
+    assert "📅 Сегодня" in labels
+    assert "🔔 Напоминания" in labels
+    assert "✏️ Изменить" in labels
+
+    state = FakeState()
+    callback = FakeCallback()
+    await h.on_menu_action(
+        callback, MenuCB(action="months"), state, storage, config
+    )
+    assert "Загруженные расписания" in callback.message.last_text
+
+    await h.on_menu_action(
+        callback, MenuCB(action="date"), state, storage, config
+    )
+    assert state.state == h.Form.menu_date
+    assert "Введите дату" in callback.message.last_text
+
+    date_message = FakeMessage()
+    date_message.text = "15.12"
+    await h.on_menu_date_text(date_message, state, storage, config)
+    assert "расписания нет" in date_message.last_text
+
+
+async def test_main_menu_hides_owner_actions_for_subscriber(
+    storage: Storage,
+) -> None:
+    group, schedule_id = await _draft(storage)
+    await storage.activate(schedule_id, group.id)
+    await storage.subscribe(777, group.id)
+
+    message = FakeMessage(777)
+    await h.cmd_menu(message, storage)
+    keyboard = message.sent[-1][1]
+    labels = [
+        button.text for row in keyboard.inline_keyboard for button in row
+    ]
+    assert "🔔 Напоминания" not in labels
+    assert "✏️ Изменить" not in labels

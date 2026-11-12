@@ -397,14 +397,15 @@ def no_schedule_text(year: int, month: int, latest: Schedule | None) -> str:
 def reminders_menu_text(
     settings: ReminderSettings, employee_name: str | None
 ) -> str:
-    mode_title = REMINDER_MODE_TITLES.get(settings.mode, settings.mode)
-    if settings.mode == "end_of_shift":
-        time_line = (
-            "⏰ Время: автоматически ("
-            "Д — 20:00, Н — 08:00 следующего дня, ДД — 16:00)"
-        )
-    else:
-        time_line = f"⏰ Время: {settings.time}"
+    mode_lines = []
+    for mode, title in REMINDER_MODE_TITLES.items():
+        mark = "✅" if mode in settings.modes else "▫️"
+        suffix = ""
+        if mode == "shift_start":
+            suffix = " — по типу смены"
+        elif mode == "shift_end":
+            suffix = " — по типу смены"
+        mode_lines.append(f"{mark} {title.capitalize()}{suffix}")
     type_titles = {
         "day": "🟩 Д",
         "night": "🟦 Н",
@@ -418,11 +419,14 @@ def reminders_menu_text(
         "🔔 <b>Напоминания о сменах</b>",
         "",
         f"👤 Сотрудник: <b>{html.escape(employee_name or 'не выбран')}</b>",
-        f"📅 Когда: {mode_title}",
-        time_line,
+        "📅 Когда:",
+        *mode_lines,
+        f"⏰ Время за день до смены: {settings.time}",
         f"🗓 Типы смен: {types}",
         f"📣 Статус: {'включены' if settings.enabled else 'выключены'}",
         "",
+        "Начало и конец смены считаются автоматически: "
+        "Д — 08:00/20:00, Н — 20:30/08:00, ДД — 08:00/16:00.",
         "Напоминание придёт с кнопкой подтверждения. Если не нажать её, "
         "бот повторит сообщение через 30 минут.",
     ]
@@ -445,8 +449,8 @@ def reminder_message_text(
 ) -> str:
     titles = {
         "day_before": "🔔 <b>Напоминание: завтра смена</b>",
-        "same_day": "🔔 <b>Напоминание: сегодня смена</b>",
-        "end_of_shift": "🔔 <b>Смена завершена</b>",
+        "shift_start": "🔔 <b>Напоминание: начало смены</b>",
+        "shift_end": "🔔 <b>Смена завершена</b>",
     }
     title = titles.get(mode, "🔔 <b>Напоминание о смене</b>")
     note = ""
@@ -455,7 +459,9 @@ def reminder_message_text(
             title = "🔔 <b>Напоминание: сегодня смена</b>"
         else:
             note = "Завтра у вас смена — не забудьте."
-    elif mode == "end_of_shift":
+    elif mode == "shift_start":
+        note = "Смена начинается."
+    elif mode == "shift_end":
         note = "Смена закончилась."
     lines = [
         title,
@@ -475,6 +481,7 @@ def help_text() -> str:
         "Одно расписание можно сделать общим для нескольких чатов. "
         "Создатель загружает таблицы, остальные подписываются по коду.\n\n"
         "<b>Подписка</b>\n"
+        "/menu — главное меню со всеми действиями\n"
         "/start — подписаться по коду или создать новое расписание\n"
         "/share — показать код расписания\n"
         "/unsubscribe — отписаться от общего расписания\n"
@@ -493,7 +500,7 @@ def help_text() -> str:
         "/employee — сменить сотрудника\n\n"
         "<b>Только создатель</b>\n"
         "загрузка картинок, /edit, /delete, /delete_workspace\n"
-        "/reminders — напоминания о сменах (режим, время, типы смен)\n\n"
+        "/reminders — напоминания о сменах (все режимы, время, типы смен)\n\n"
         "/cancel — отменить ввод или распознавание\n\n"
         f"Обозначения: {LEGEND}\n\n"
         "Коды: Д/Н — 12ч, ДД — 8ч, НМ — ночь в начале/конце месяца, "

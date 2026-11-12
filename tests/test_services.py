@@ -144,20 +144,23 @@ def test_reminder_due_at() -> None:
     assert reminder_due_at(day, "day", "day_before", "20:00", tz) == datetime(
         2026, 11, 11, 20, 0, tzinfo=tz
     )
-    assert reminder_due_at(day, "day", "same_day", "08:30", tz) == datetime(
-        2026, 11, 12, 8, 30, tzinfo=tz
+    assert reminder_due_at(day, "day", "shift_start", "20:00", tz) == datetime(
+        2026, 11, 12, 8, 0, tzinfo=tz
     )
-    assert reminder_due_at(day, "day", "end_of_shift", "20:00", tz) == datetime(
+    assert reminder_due_at(
+        day, "night", "shift_start", "20:00", tz
+    ) == datetime(2026, 11, 12, 20, 30, tzinfo=tz)
+    assert reminder_due_at(day, "day", "shift_end", "20:00", tz) == datetime(
         2026, 11, 12, 20, 0, tzinfo=tz
     )
     assert reminder_due_at(
-        day, "short_day", "end_of_shift", "20:00", tz
+        day, "short_day", "shift_end", "20:00", tz
     ) == datetime(2026, 11, 12, 16, 0, tzinfo=tz)
     assert reminder_due_at(
-        day, "night", "end_of_shift", "20:00", tz
+        day, "night", "shift_end", "20:00", tz
     ) == datetime(2026, 11, 13, 8, 0, tzinfo=tz)
 
     assert shift_end_datetime(day, "night", tz) == datetime(
         2026, 11, 13, 8, 0, tzinfo=tz
     )
-    assert reminder_due_at(day, "vacation", "end_of_shift", "20:00", tz) is None
+    assert reminder_due_at(day, "vacation", "shift_end", "20:00", tz) is None

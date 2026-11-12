@@ -9,6 +9,7 @@ from .callbacks import (
     CancelCB,
     DeleteWorkspaceCB,
     EmployeeCB,
+    MenuCB,
     RememberCB,
     ReminderAckCB,
     ReminderCB,
@@ -254,8 +255,8 @@ def reset_done_keyboard() -> InlineKeyboardMarkup:
 
 REMINDER_MODE_LABELS = {
     "day_before": "За день до смены",
-    "same_day": "В день смены",
-    "end_of_shift": "В конце смены",
+    "shift_start": "В начале смены",
+    "shift_end": "В конце смены",
 }
 
 REMINDER_TYPE_LABELS = {
@@ -268,7 +269,7 @@ REMINDER_TYPE_LABELS = {
 def reminders_keyboard(settings: ReminderSettings) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for mode, label in REMINDER_MODE_LABELS.items():
-        mark = "✅ " if settings.mode == mode else ""
+        mark = "✅ " if mode in settings.modes else "▫️ "
         rows.append(
             [
                 _button(
@@ -277,15 +278,10 @@ def reminders_keyboard(settings: ReminderSettings) -> InlineKeyboardMarkup:
                 )
             ]
         )
-    time_label = (
-        "⏰ Время: автоматически"
-        if settings.mode == "end_of_shift"
-        else f"⏰ Время: {settings.time}"
-    )
     rows.append(
         [
             _button(
-                time_label,
+                f"⏰ Время за день: {settings.time}",
                 ReminderCB(action="time"),
             )
         ]
@@ -369,6 +365,56 @@ def reminder_ack_keyboard(delivery_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def reminders_prompt_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _button(
+                    "🔔 Настроить напоминания",
+                    ReminderCB(action="prompt_yes"),
+                )
+            ],
+            [
+                _button(
+                    "Позже",
+                    ReminderCB(action="prompt_no"),
+                )
+            ],
+        ]
+    )
+
+
+def main_menu_keyboard(*, is_owner: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            _button("📅 Сегодня", MenuCB(action="today")),
+            _button("🗓 Месяц", MenuCB(action="month")),
+        ],
+        [
+            _button("📆 Дата", MenuCB(action="date")),
+            _button("👤 Сотрудник", MenuCB(action="employee")),
+        ],
+        [
+            _button("🗂 Месяцы", MenuCB(action="months")),
+            _button("🔑 Код", MenuCB(action="share")),
+        ],
+    ]
+    if is_owner:
+        rows.append(
+            [
+                _button("✏️ Изменить", MenuCB(action="edit")),
+                _button("🔔 Напоминания", MenuCB(action="reminders")),
+            ]
+        )
+    rows.append(
+        [
+            _button("🧹 Сброс", MenuCB(action="reset")),
+            _button("ℹ️ Помощь", MenuCB(action="help")),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def edit_menu_keyboard(schedule_id: int) -> InlineKeyboardMarkup:

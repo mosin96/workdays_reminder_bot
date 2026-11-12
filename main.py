@@ -22,6 +22,7 @@ from bot.storage import Storage
 log = logging.getLogger(__name__)
 
 COMMANDS = [
+    BotCommand(command="menu", description="Главное меню"),
     BotCommand(command="today", description="Смена сегодня"),
     BotCommand(command="date", description="Смена на дату (например, /date 15.12)"),
     BotCommand(command="month", description="Календарь месяца"),

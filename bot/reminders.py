@@ -112,45 +112,46 @@ class ReminderScheduler:
             if shift is None or shift.type not in settings.shift_types:
                 continue
 
-            due_at = reminder_due_at(
-                shift_day, shift.type, settings.mode, settings.time, tz
-            )
-            if due_at is None or now < due_at:
-                continue
-            if now > due_at + self.stale_after:
-                continue
-
-            delivery = await self.storage.get_reminder_delivery(
-                settings.chat_id, shift_day, settings.mode
-            )
-            if delivery is not None:
-                if delivery.acked_at is not None:
-                    continue
-                if (
-                    delivery.last_sent_at is not None
-                    and now < delivery.last_sent_at + self.repeat_after
-                ):
-                    continue
-            else:
-                delivery = await self.storage.create_reminder_delivery(
-                    chat_id=settings.chat_id,
-                    group_id=group.id,
-                    employee_position=employee.position,
-                    shift_date=shift_day,
-                    shift_type=shift.type,
-                    mode=settings.mode,
-                    due_at=due_at,
+            for mode in settings.modes:
+                due_at = reminder_due_at(
+                    shift_day, shift.type, mode, settings.time, tz
                 )
+                if due_at is None or now < due_at:
+                    continue
+                if now > due_at + self.stale_after:
+                    continue
 
-            await self._send(
-                delivery.id,
-                settings.chat_id,
-                employee,
-                shift_day,
-                shift,
-                settings.mode,
-                now,
-            )
+                delivery = await self.storage.get_reminder_delivery(
+                    settings.chat_id, shift_day, mode
+                )
+                if delivery is not None:
+                    if delivery.acked_at is not None:
+                        continue
+                    if (
+                        delivery.last_sent_at is not None
+                        and now < delivery.last_sent_at + self.repeat_after
+                    ):
+                        continue
+                else:
+                    delivery = await self.storage.create_reminder_delivery(
+                        chat_id=settings.chat_id,
+                        group_id=group.id,
+                        employee_position=employee.position,
+                        shift_date=shift_day,
+                        shift_type=shift.type,
+                        mode=mode,
+                        due_at=due_at,
+                    )
+
+                await self._send(
+                    delivery.id,
+                    settings.chat_id,
+                    employee,
+                    shift_day,
+                    shift,
+                    mode,
+                    now,
+                )
 
     async def _send(
         self,

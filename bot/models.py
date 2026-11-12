@@ -69,7 +69,7 @@ class Schedule:
 class ReminderSettings:
     chat_id: int
     group_id: int
-    mode: str
+    modes: tuple[str, ...]
     time: str
     shift_types: tuple[str, ...]
     enabled: bool = False

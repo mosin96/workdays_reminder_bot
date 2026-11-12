@@ -51,3 +51,7 @@ class ReminderCB(CallbackData, prefix="rm"):
 
 class ReminderAckCB(CallbackData, prefix="rma"):
     id: int
+
+
+class MenuCB(CallbackData, prefix="menu"):
+    action: str

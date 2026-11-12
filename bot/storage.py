@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS chat_blocks (
 CREATE TABLE IF NOT EXISTS reminder_settings (
     chat_id INTEGER PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES schedule_groups(id) ON DELETE CASCADE,
-    mode TEXT NOT NULL DEFAULT 'day_before',
+    modes TEXT NOT NULL DEFAULT 'day_before,shift_start,shift_end',
     time TEXT NOT NULL DEFAULT '20:00',
     shift_types TEXT NOT NULL DEFAULT 'day,night,short_day',
     enabled INTEGER NOT NULL DEFAULT 0,
@@ -156,6 +156,7 @@ class Storage:
         await self._db.execute("PRAGMA foreign_keys = ON")
         await self._db.executescript(SCHEMA)
         await self._ensure_shift_columns()
+        await self._ensure_reminder_columns()
         await self._db.commit()
 
     async def _ensure_shift_columns(self) -> None:
@@ -166,6 +167,34 @@ class Storage:
         if "overtime" not in columns:
             await self.db.execute(
                 "ALTER TABLE shifts ADD COLUMN overtime INTEGER NOT NULL DEFAULT 0"
+            )
+
+    async def _ensure_reminder_columns(self) -> None:
+        """Переводит старую настройку с одним режимом на список режимов."""
+
+        cursor = await self.db.execute("PRAGMA table_info(reminder_settings)")
+        columns = {str(row["name"]) for row in await cursor.fetchall()}
+        if not columns or "modes" in columns:
+            return
+        await self.db.execute(
+            "ALTER TABLE reminder_settings ADD COLUMN modes TEXT NOT NULL "
+            "DEFAULT 'day_before,shift_start,shift_end'"
+        )
+        if "mode" in columns:
+            await self.db.execute(
+                "UPDATE reminder_settings SET modes = CASE mode "
+                "WHEN 'same_day' THEN 'shift_start' "
+                "WHEN 'end_of_shift' THEN 'shift_end' "
+                "ELSE mode END"
+            )
+        cursor = await self.db.execute("PRAGMA table_info(reminder_deliveries)")
+        delivery_columns = {str(row["name"]) for row in await cursor.fetchall()}
+        if delivery_columns:
+            await self.db.execute(
+                "UPDATE reminder_deliveries SET mode = CASE mode "
+                "WHEN 'same_day' THEN 'shift_start' "
+                "WHEN 'end_of_shift' THEN 'shift_end' "
+                "ELSE mode END"
             )
 
     async def _drop_old_schema_if_needed(self) -> None:
@@ -466,6 +495,10 @@ class Storage:
 
     @staticmethod
     def _reminder_settings_from_row(row: aiosqlite.Row) -> ReminderSettings:
+        raw_modes = row["modes"] if "modes" in row.keys() else row["mode"]
+        modes = tuple(
+            value for value in str(raw_modes or "").split(",") if value
+        )
         types = tuple(
             value
             for value in str(row["shift_types"] or "").split(",")
@@ -474,7 +507,7 @@ class Storage:
         return ReminderSettings(
             chat_id=int(row["chat_id"]),
             group_id=int(row["group_id"]),
-            mode=str(row["mode"]),
+            modes=modes,
             time=str(row["time"]),
             shift_types=types,
             enabled=bool(row["enabled"]),
@@ -484,7 +517,7 @@ class Storage:
         self,
         chat_id: int,
         group_id: int,
-        mode: str,
+        modes: tuple[str, ...],
         time: str,
         shift_types: tuple[str, ...],
         enabled: bool,
@@ -492,11 +525,11 @@ class Storage:
         async with self._lock:
             await self.db.execute(
                 "INSERT INTO reminder_settings "
-                "(chat_id, group_id, mode, time, shift_types, enabled, updated_at) "
+                "(chat_id, group_id, modes, time, shift_types, enabled, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(chat_id) DO UPDATE SET "
                 "group_id = excluded.group_id, "
-                "mode = excluded.mode, "
+                "modes = excluded.modes, "
                 "time = excluded.time, "
                 "shift_types = excluded.shift_types, "
                 "enabled = excluded.enabled, "
@@ -504,7 +537,7 @@ class Storage:
                 (
                     chat_id,
                     group_id,
-                    mode,
+                    ",".join(modes),
                     time,
                     ",".join(shift_types),
                     int(enabled),

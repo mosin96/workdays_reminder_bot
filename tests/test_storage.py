@@ -271,18 +271,59 @@ async def test_existing_db_gets_overtime_column(tmp_path: Path) -> None:
         await storage.close()
 
 
+async def test_old_reminder_settings_migrate_to_modes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "reminders_v2.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE schedule_groups ("
+        "id INTEGER PRIMARY KEY, code TEXT, owner_chat_id INTEGER, created_at TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO schedule_groups (id, code, owner_chat_id, created_at) "
+        "VALUES (1, 'OLDCODE', 1, '2026-11-01')"
+    )
+    connection.execute(
+        "CREATE TABLE reminder_settings ("
+        "chat_id INTEGER PRIMARY KEY, group_id INTEGER NOT NULL, "
+        "mode TEXT NOT NULL DEFAULT 'day_before', "
+        "time TEXT NOT NULL DEFAULT '20:00', "
+        "shift_types TEXT NOT NULL DEFAULT 'day,night,short_day', "
+        "enabled INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO reminder_settings "
+        "(chat_id, group_id, mode, time, shift_types, enabled, updated_at) "
+        "VALUES (1, 1, 'same_day', '20:00', 'day,night', 1, '2026-11-01')"
+    )
+    connection.commit()
+    connection.close()
+
+    storage = Storage(path)
+    await storage.init()
+    try:
+        settings = await storage.get_reminder_settings(1)
+        assert settings is not None
+        assert settings.modes == ("shift_start",)
+        assert settings.shift_types == ("day", "night")
+        assert settings.enabled is True
+    finally:
+        await storage.close()
+
+
 async def test_reminder_settings_and_deliveries(storage: Storage) -> None:
     group = await storage.create_group(owner_chat_id=1)
 
     settings = await storage.save_reminder_settings(
         chat_id=1,
         group_id=group.id,
-        mode="day_before",
+        modes=("day_before", "shift_start"),
         time="20:00",
         shift_types=("day", "night"),
         enabled=True,
     )
-    assert settings.mode == "day_before"
+    assert settings.modes == ("day_before", "shift_start")
     assert settings.shift_types == ("day", "night")
     assert settings.enabled is True
     assert await storage.get_reminder_settings(1) == settings

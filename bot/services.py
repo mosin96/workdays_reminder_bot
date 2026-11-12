@@ -204,14 +204,20 @@ def month_of(day: date) -> tuple[int, int]:
 # Напоминания
 # ---------------------------------------------------------------------------
 
-REMINDER_MODES = ("day_before", "same_day", "end_of_shift")
+REMINDER_MODES = ("day_before", "shift_start", "shift_end")
 REMINDER_MODE_TITLES = {
     "day_before": "за день до смены",
-    "same_day": "в день смены",
-    "end_of_shift": "в конце смены",
+    "shift_start": "в начале смены",
+    "shift_end": "в конце смены",
 }
 
 WORKING_SHIFT_TYPES = ("day", "night", "short_day")
+
+SHIFT_START_TIMES = {
+    "day": time(8, 0),
+    "short_day": time(8, 0),
+    "night": time(20, 30),
+}
 
 SHIFT_END_TIMES = {
     "day": time(20, 0),
@@ -247,6 +253,15 @@ def resolve_timezone(name: str) -> ZoneInfo | None:
         return None
 
 
+def shift_start_datetime(
+    day: date, shift_type: str, tz: ZoneInfo
+) -> datetime | None:
+    start = SHIFT_START_TIMES.get(shift_type)
+    if start is None:
+        return None
+    return datetime.combine(day, start, tzinfo=tz)
+
+
 def shift_end_datetime(
     day: date, shift_type: str, tz: ZoneInfo
 ) -> datetime | None:
@@ -266,11 +281,15 @@ def reminder_due_at(
 ) -> datetime | None:
     """Когда отправить напоминание о конкретной смене."""
 
-    if mode == "end_of_shift":
+    if mode == "shift_start":
+        return shift_start_datetime(shift_day, shift_type, tz)
+    if mode == "shift_end":
         return shift_end_datetime(shift_day, shift_type, tz)
+    if mode != "day_before":
+        return None
     try:
         parsed = parse_time_query(reminder_time)
     except QueryError:
         return None
-    target_day = shift_day - timedelta(days=1) if mode == "day_before" else shift_day
+    target_day = shift_day - timedelta(days=1)
     return datetime.combine(target_day, parsed, tzinfo=tz)

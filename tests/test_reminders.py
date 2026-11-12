@@ -66,23 +66,23 @@ async def _enable(
     storage: Storage,
     group_id: int,
     *,
-    mode: str,
+    modes: tuple[str, ...],
     time: str = "20:00",
     shift_types: tuple[str, ...] = ("day", "night", "short_day"),
 ) -> None:
     await storage.save_reminder_settings(
         chat_id=1,
         group_id=group_id,
-        mode=mode,
+        modes=modes,
         time=time,
         shift_types=shift_types,
         enabled=True,
     )
 
 
-async def test_same_day_send_repeat_and_ack(storage: Storage) -> None:
+async def test_shift_start_send_repeat_and_ack(storage: Storage) -> None:
     group, _ = await _setup(storage)
-    await _enable(storage, group.id, mode="same_day", time="08:00")
+    await _enable(storage, group.id, modes=("shift_start",))
     bot = FakeBot()
     scheduler = ReminderScheduler(bot, storage, _config(storage))
     shift_day = date(2026, 11, 12)
@@ -90,8 +90,10 @@ async def test_same_day_send_repeat_and_ack(storage: Storage) -> None:
 
     await scheduler.tick(now)
     assert len(bot.sent) == 1
-    assert "сегодня смена" in bot.sent[0][1]
-    delivery = await storage.get_reminder_delivery(1, shift_day, "same_day")
+    assert "начало смены" in bot.sent[0][1]
+    delivery = await storage.get_reminder_delivery(
+        1, shift_day, "shift_start"
+    )
     assert delivery is not None
     assert delivery.sent_count == 1
     assert delivery.last_sent_at == now
@@ -111,7 +113,7 @@ async def test_day_before_across_month_boundary(storage: Storage) -> None:
     group, _ = await _setup(
         storage, year=2026, month=12, day=1, shift_type="day"
     )
-    await _enable(storage, group.id, mode="day_before", time="20:00")
+    await _enable(storage, group.id, modes=("day_before",), time="20:00")
     bot = FakeBot()
     scheduler = ReminderScheduler(bot, storage, _config(storage))
 
@@ -129,7 +131,7 @@ async def test_day_before_across_month_boundary(storage: Storage) -> None:
 
 async def test_day_before_after_midnight_says_today(storage: Storage) -> None:
     group, _ = await _setup(storage, day=12, shift_type="day")
-    await _enable(storage, group.id, mode="day_before", time="20:00")
+    await _enable(storage, group.id, modes=("day_before",), time="20:00")
     bot = FakeBot()
     scheduler = ReminderScheduler(bot, storage, _config(storage))
 
@@ -143,7 +145,7 @@ async def test_day_before_after_midnight_says_today(storage: Storage) -> None:
 
 async def test_end_of_night_shift(storage: Storage) -> None:
     group, _ = await _setup(storage, day=12, shift_type="night")
-    await _enable(storage, group.id, mode="end_of_shift")
+    await _enable(storage, group.id, modes=("shift_end",))
     bot = FakeBot()
     scheduler = ReminderScheduler(bot, storage, _config(storage))
 
@@ -159,27 +161,45 @@ async def test_end_of_night_shift(storage: Storage) -> None:
     assert "Смена завершена" in bot.sent[0][1]
 
 
-async def test_same_day_uses_configured_time(storage: Storage) -> None:
+async def test_all_three_modes_work_together(storage: Storage) -> None:
     group, _ = await _setup(storage, day=12, shift_type="day")
-    await _enable(storage, group.id, mode="same_day", time="12:00")
+    await _enable(
+        storage,
+        group.id,
+        modes=("day_before", "shift_start", "shift_end"),
+        time="20:00",
+    )
     bot = FakeBot()
     scheduler = ReminderScheduler(bot, storage, _config(storage))
 
     await scheduler.tick(
-        datetime(2026, 11, 12, 11, 59, tzinfo=timezone.utc)
-    )
-    assert bot.sent == []
-
-    await scheduler.tick(
-        datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+        datetime(2026, 11, 11, 20, 0, tzinfo=timezone.utc)
     )
     assert len(bot.sent) == 1
-    assert "сегодня смена" in bot.sent[0][1]
+    assert "завтра смена" in bot.sent[0][1]
+
+    await scheduler.tick(
+        datetime(2026, 11, 12, 8, 0, tzinfo=timezone.utc)
+    )
+    assert len(bot.sent) == 2
+    assert "начало смены" in bot.sent[1][1]
+
+    await scheduler.tick(
+        datetime(2026, 11, 12, 20, 0, tzinfo=timezone.utc)
+    )
+    assert len(bot.sent) == 3
+    assert "Смена завершена" in bot.sent[2][1]
+
+    delivery = await storage.get_reminder_delivery(
+        1, date(2026, 11, 12), "shift_start"
+    )
+    assert delivery is not None
+    assert delivery.sent_count == 1
 
 
 async def test_stale_reminder_is_not_sent(storage: Storage) -> None:
     group, _ = await _setup(storage)
-    await _enable(storage, group.id, mode="same_day", time="08:00")
+    await _enable(storage, group.id, modes=("shift_start",))
     bot = FakeBot()
     scheduler = ReminderScheduler(bot, storage, _config(storage))
 
@@ -194,8 +214,7 @@ async def test_disabled_or_filtered_shift_is_skipped(storage: Storage) -> None:
     await _enable(
         storage,
         group.id,
-        mode="same_day",
-        time="08:00",
+        modes=("shift_start",),
         shift_types=("night",),
     )
     bot = FakeBot()
@@ -208,8 +227,7 @@ async def test_disabled_or_filtered_shift_is_skipped(storage: Storage) -> None:
     await _enable(
         storage,
         group.id,
-        mode="same_day",
-        time="08:00",
+        modes=("shift_start",),
         shift_types=("day",),
     )
     await storage.set_reminder_enabled(1, False)
@@ -220,7 +238,7 @@ async def test_disabled_or_filtered_shift_is_skipped(storage: Storage) -> None:
 async def test_reminder_uses_selected_employee(storage: Storage) -> None:
     group, _ = await _setup(storage)
     await storage.set_employee(1, "Петров Пётр")
-    await _enable(storage, group.id, mode="same_day", time="08:00")
+    await _enable(storage, group.id, modes=("shift_start",))
     bot = FakeBot()
     scheduler = ReminderScheduler(bot, storage, _config(storage))
 

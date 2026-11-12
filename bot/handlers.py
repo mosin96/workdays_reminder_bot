@@ -23,6 +23,7 @@ from .callbacks import (
     CancelCB,
     DeleteWorkspaceCB,
     EmployeeCB,
+    MenuCB,
     RememberCB,
     ReminderAckCB,
     ReminderCB,
@@ -58,9 +59,11 @@ from .keyboards import (
     edit_names_keyboard,
     edit_schedule_keyboard,
     employees_keyboard,
+    main_menu_keyboard,
     remember_keyboard,
     reminder_time_keyboard,
     reminders_keyboard,
+    reminders_prompt_keyboard,
     reset_confirm_keyboard,
     reset_done_keyboard,
     reset_keyboard,
@@ -108,6 +111,10 @@ SUBSCRIBE_PROMPT = (
     "Отправьте код расписания, например <code>K7M2-QX9P</code>.\n"
     "Код передаёт создатель расписания. /cancel — отмена."
 )
+MAIN_MENU_TEXT = (
+    "🏠 <b>Главное меню</b>\n\n"
+    "Выберите действие. Все команды также доступны через меню Telegram."
+)
 
 
 class Form(StatesGroup):
@@ -115,6 +122,7 @@ class Form(StatesGroup):
     custom_year = State()
     waiting_code = State()
     reminder_time = State()
+    menu_date = State()
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +396,12 @@ async def _show_subscription_info(
         lines.append("/delete_workspace — удалить расписание")
     else:
         lines.append("/unsubscribe — отписаться")
-    await message.answer("\n".join(lines))
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=main_menu_keyboard(
+            is_owner=group.owner_chat_id == message.chat.id
+        ),
+    )
 
     if latest is not None and employee is None:
         await _send_employee_picker(message, storage, latest)
@@ -402,7 +415,7 @@ async def _ensure_reminder_settings(
         settings = await storage.save_reminder_settings(
             chat_id,
             group_id,
-            mode="day_before",
+            modes=REMINDER_MODES,
             time="20:00",
             shift_types=WORKING_SHIFT_TYPES,
             enabled=False,
@@ -421,6 +434,24 @@ async def _render_reminders_menu(
         callback,
         reminders_menu_text(settings, employee_name),
         reply_markup=reminders_keyboard(settings),
+    )
+
+
+async def _maybe_offer_reminders(
+    message: Message, storage: Storage, schedule: Schedule
+) -> None:
+    if not await _is_owner(storage, message.chat.id, schedule.group_id):
+        return
+    if await storage.get_reminder_settings(message.chat.id) is not None:
+        return
+    await _ensure_reminder_settings(
+        storage, message.chat.id, schedule.group_id
+    )
+    await message.answer(
+        "🔔 <b>Настроить напоминания о сменах?</b>\n\n"
+        "Можно включить сразу три варианта: за день до смены, "
+        "в начале смены и в конце смены.",
+        reply_markup=reminders_prompt_keyboard(),
     )
 
 
@@ -482,6 +513,96 @@ async def cmd_start(
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     await message.answer(help_text())
+
+
+async def _show_main_menu(message: Message, storage: Storage) -> None:
+    context = await _group_for_chat(storage, message.chat.id)
+    if context is None:
+        await _start_prompt(message)
+        return
+    _, group = context
+    await message.answer(
+        MAIN_MENU_TEXT,
+        reply_markup=main_menu_keyboard(
+            is_owner=group.owner_chat_id == message.chat.id
+        ),
+    )
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message, storage: Storage) -> None:
+    await _show_main_menu(message, storage)
+
+
+@router.callback_query(MenuCB.filter())
+async def on_menu_action(
+    callback: CallbackQuery,
+    callback_data: MenuCB,
+    state: FSMContext,
+    storage: Storage,
+    config: Config,
+) -> None:
+    if callback.message is None:
+        return
+    action = callback_data.action
+    await callback.answer()
+    await state.clear()
+    if action == "today":
+        await cmd_today(callback.message, storage, config)
+        return
+    if action == "month":
+        today = _today(config)
+        await _show_month(callback.message, storage, today.year, today.month)
+        return
+    if action == "date":
+        await state.set_state(Form.menu_date)
+        await callback.message.answer(
+            "Введите дату:\n"
+            "15 — 15-е текущего месяца\n"
+            "15.12 — 15 декабря\n"
+            "2026-12-15 — конкретная дата\n"
+            "/cancel — отмена."
+        )
+        return
+    if action == "employee":
+        await cmd_employee(callback.message, storage)
+        return
+    if action == "months":
+        await cmd_months(callback.message, storage)
+        return
+    if action == "share":
+        await cmd_share(callback.message, storage)
+        return
+    if action == "reset":
+        await cmd_reset(callback.message, storage, config)
+        return
+    if action == "reminders":
+        await cmd_reminders(callback.message, storage)
+        return
+    if action == "edit":
+        today = _today(config)
+        await _show_edit(callback.message, storage, today.year, today.month)
+        return
+    if action == "help":
+        await cmd_help(callback.message)
+        return
+
+
+@router.message(Form.menu_date, F.text)
+async def on_menu_date_text(
+    message: Message, state: FSMContext, storage: Storage, config: Config
+) -> None:
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        await state.clear()
+        return
+    try:
+        target = parse_date_query(text, _today(config))
+    except QueryError as exc:
+        await message.answer(f"⚠️ {html.escape(str(exc))}")
+        return
+    await state.clear()
+    await _show_day(message, storage, config, target)
 
 
 @router.message(Command("cancel"))
@@ -1209,6 +1330,7 @@ async def on_confirm(
                 "Показать код: /share"
             )
         await _ask_employee(callback.message, storage, schedule)
+        await _maybe_offer_reminders(callback.message, storage, schedule)
 
 
 @router.callback_query(EmployeeCB.filter())
@@ -1384,33 +1506,52 @@ async def on_reminder_action(
         return await storage.save_reminder_settings(
             settings.chat_id,
             settings.group_id,
-            mode=changes.get("mode", settings.mode),
+            modes=changes.get("modes", settings.modes),
             time=changes.get("time", settings.time),
             shift_types=changes.get("shift_types", settings.shift_types),
             enabled=changes.get("enabled", settings.enabled),
         )
 
+    if action == "prompt_yes":
+        await callback.answer()
+        await _render_reminders_menu(callback, storage, settings)
+        return
+
+    if action == "prompt_no":
+        await callback.answer()
+        await _safe_edit(
+            callback,
+            "Хорошо. Настроить напоминания можно позже командой /reminders.",
+        )
+        return
+
     if action == "mode":
-        if callback_data.value not in REMINDER_MODES:
+        mode = callback_data.value
+        if mode not in REMINDER_MODES:
             await callback.answer("Неизвестный режим", show_alert=True)
             return
-        settings = await save(mode=callback_data.value)
+        current = set(settings.modes)
+        if mode in current:
+            if len(current) == 1:
+                await callback.answer(
+                    "Оставьте включённым хотя бы один режим.",
+                    show_alert=True,
+                )
+                return
+            current.remove(mode)
+        else:
+            current.add(mode)
+        ordered = tuple(item for item in REMINDER_MODES if item in current)
+        settings = await save(modes=ordered)
         await callback.answer("Сохранено")
         await _render_reminders_menu(callback, storage, settings)
         return
 
     if action == "time":
-        if settings.mode == "end_of_shift":
-            await callback.answer(
-                "В этом режиме время определяется по типу смены: "
-                "Д — 20:00, Н — 08:00, ДД — 16:00.",
-                show_alert=True,
-            )
-            return
         await callback.answer()
         await _safe_edit(
             callback,
-            "⏰ Выберите время напоминания:",
+            "⏰ Выберите время напоминания за день до смены:",
             reply_markup=reminder_time_keyboard(settings.time),
         )
         return
@@ -1519,14 +1660,16 @@ async def on_reminder_time_text(
     settings = await storage.save_reminder_settings(
         settings.chat_id,
         settings.group_id,
-        mode=settings.mode,
+        modes=settings.modes,
         time=value,
         shift_types=settings.shift_types,
         enabled=settings.enabled,
     )
     subscription = await storage.get_subscription(message.chat.id)
     employee_name = subscription.employee_name if subscription else None
-    await message.answer(f"✅ Время напоминания: <b>{value}</b>")
+    await message.answer(
+        f"✅ Время напоминания за день до смены: <b>{value}</b>"
+    )
     await message.answer(
         reminders_menu_text(settings, employee_name),
         reply_markup=reminders_keyboard(settings),
@@ -1661,18 +1804,9 @@ async def cmd_date(
     await _show_day(message, storage, config, target)
 
 
-@router.message(Command("month"))
-async def cmd_month(
-    message: Message, storage: Storage, config: Config
+async def _show_month(
+    message: Message, storage: Storage, year: int, month: int
 ) -> None:
-    parts = (message.text or "").split(maxsplit=1)
-    arg = parts[1] if len(parts) > 1 else ""
-    try:
-        year, month = parse_month_query(arg, _today(config))
-    except QueryError as exc:
-        await message.answer(f"⚠️ {html.escape(str(exc))}")
-        return
-
     context = await _group_for_chat(storage, message.chat.id)
     if context is None:
         await _start_prompt(message)
@@ -1707,9 +1841,22 @@ async def cmd_month(
     )
 
 
-@router.message(Command("edit"))
-async def cmd_edit(
+@router.message(Command("month"))
+async def cmd_month(
     message: Message, storage: Storage, config: Config
+) -> None:
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1] if len(parts) > 1 else ""
+    try:
+        year, month = parse_month_query(arg, _today(config))
+    except QueryError as exc:
+        await message.answer(f"⚠️ {html.escape(str(exc))}")
+        return
+    await _show_month(message, storage, year, month)
+
+
+async def _show_edit(
+    message: Message, storage: Storage, year: int, month: int
 ) -> None:
     context = await _group_for_chat(storage, message.chat.id)
     if context is None:
@@ -1719,15 +1866,6 @@ async def cmd_edit(
     if group.owner_chat_id != message.chat.id:
         await message.answer("⛔ Изменять расписание может только создатель.")
         return
-
-    parts = (message.text or "").split(maxsplit=1)
-    arg = parts[1] if len(parts) > 1 else ""
-    try:
-        year, month = parse_month_query(arg, _today(config))
-    except QueryError as exc:
-        await message.answer(f"⚠️ {html.escape(str(exc))}")
-        return
-
     schedule = await storage.get_active(group.id, year, month)
     if schedule is None:
         latest = await storage.get_latest(group.id)
@@ -1748,6 +1886,20 @@ async def cmd_edit(
             context="quick",
         ),
     )
+
+
+@router.message(Command("edit"))
+async def cmd_edit(
+    message: Message, storage: Storage, config: Config
+) -> None:
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1] if len(parts) > 1 else ""
+    try:
+        year, month = parse_month_query(arg, _today(config))
+    except QueryError as exc:
+        await message.answer(f"⚠️ {html.escape(str(exc))}")
+        return
+    await _show_edit(message, storage, year, month)
 
 
 @router.message(Command("months"))
